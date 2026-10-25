@@ -1,0 +1,28 @@
+{{template "header"}}
+{{if .DryRun}}<div class="banner dry"><strong>Dry run:</strong> sources and Gmail are only read. Nothing is imported, labeled or deleted, and no state is saved.</div>{{end}}
+{{if .Notice}}<div class="banner notice">{{.Notice}}</div>{{end}}
+
+{{range .Accounts}}
+<h2>{{.Email}}</h2>
+<p>
+  Method: <code>{{.Method}}</code>
+  {{if eq .Method "api"}}
+    · {{if .Authorized}}<span class="ok">authorized</span>{{else}}<span class="fail">not authorized</span>{{end}}
+    {{if $.OAuthReady}}· <a href="/oauth/start?account={{.Email}}">{{if .Authorized}}Re-authorize{{else}}Authorize{{end}}</a>
+    {{else}}· <small>no OAuth client configured</small>{{end}}
+  {{end}}
+</p>
+<table>
+  <tr><th>Source</th><th>Status</th><th>Last run</th><th>Imported (total)</th><th>Details</th></tr>
+  {{range .Sources}}
+  <tr>
+    <td>{{.Source}}</td>
+    <td>{{if .Healthy}}<span class="ok">OK</span>{{else}}<span class="fail">FAIL</span>{{end}}</td>
+    <td>{{if .LastRun.IsZero}}–{{else}}{{.LastRun.Format "2006-01-02 15:04:05"}}{{end}}</td>
+    <td>{{.TotalImported}}</td>
+    <td>{{if .Healthy}}<small>{{.Summary}}</small>{{else}}{{.Message}}{{end}}</td>
+  </tr>
+  {{end}}
+</table>
+{{end}}
+{{template "footer"}}
