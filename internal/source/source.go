@@ -103,7 +103,12 @@ func MessageIDHash(raw []byte) string {
 	if err != nil {
 		return ""
 	}
-	id := strings.ToLower(strings.TrimSpace(m.Header.Get("Message-Id")))
+	return HashMessageID(m.Header.Get("Message-Id"))
+}
+
+// HashMessageID normalizes a Message-ID with or without angle brackets and hashes it.
+func HashMessageID(id string) string {
+	id = strings.ToLower(strings.Trim(strings.TrimSpace(id), "<>"))
 	if id == "" {
 		return ""
 	}
