@@ -1,0 +1,49 @@
+# Example configuration for gmail-poppers.
+# Copy to /config/config.yaml (inside the container) and adjust.
+#
+# Values of the form ${NAME} are read from environment variables, so secrets
+# can live in Portainer instead of this file. Write $$ for a literal "$".
+
+defaults:
+  interval: 5m            # how often each source is polled
+  timeout: 10m            # maximum duration of a single run
+  initial_sync: new_only  # new_only: on the first run, existing mails are only marked as seen
+                          # all:      on the first run, all existing mails are imported
+
+accounts:
+  # Key: the Gmail address the mails are imported into.
+  mymail@gmail.com:
+    method: api           # api (Gmail API, recommended) | imap (IMAP APPEND with app password)
+    sources:
+      # Key: a short name for the source. Used as Gmail label and in Gatus.
+      telekom:
+        type: pop3
+        server: securepop.t-online.de
+        # port: 995           # optional, default depends on tls
+        # tls: auto           # auto | implicit | starttls | none
+        user: me@t-online.de
+        password: ${TELEKOM_PASSWORD}
+        delete_after_import: false
+        # label: telekom      # default: source name; "" disables the extra label
+        # interval: 10m       # overrides defaults.interval
+
+      gmx:
+        type: imap
+        server: imap.gmx.net
+        user: me@gmx.de
+        password: ${GMX_PASSWORD}
+        folders: [INBOX]      # default: [INBOX]
+        label: "Imported/GMX"
+
+  myotheraccount@gmail.com:
+    method: imap
+    app_password: ${OTHER_GMAIL_APP_PASSWORD}
+    sources:
+      webde:
+        type: imap
+        server: imap.web.de
+        user: me@web.de
+        password: ${WEBDE_PASSWORD}
+        folders: [INBOX, Newsletter]
+        delete_after_import: true
+        initial_sync: all

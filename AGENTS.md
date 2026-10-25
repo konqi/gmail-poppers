@@ -14,9 +14,11 @@ messages, error messages, web UI texts, examples and documentation.
 | `cmd/gmail-poppers` | Entry point: wiring, signal handling |
 | `internal/config` | YAML config loading, `${VAR}` expansion, validation |
 | `internal/mailconn` | TCP/TLS dialing incl. TLS auto-detection |
+| `internal/source` | Source interface and shared import processor (dedupe, dry run) |
 | `internal/source/pop3` | POP3 source |
 | `internal/source/imap` | IMAP source |
 | `internal/state` | Per-source JSON state (seen UIDs, failure counters) |
+| `internal/sink` | Sink interface |
 | `internal/sink/gmailapi` | Gmail API `messages.import` sink (OAuth) |
 | `internal/sink/gmailimap` | Gmail IMAP `APPEND` sink (app password) |
 | `internal/runner` | Per-source polling loop |
@@ -31,6 +33,9 @@ messages, error messages, web UI texts, examples and documentation.
   `gmail api: ...`) because they are shown verbatim in Gatus.
 - Never log passwords, app passwords or OAuth tokens.
 - Never fall back to plaintext connections unless `tls: none` is configured.
+- Dry run (`DRY_RUN=true`) must stay read-only: no writes to mail servers,
+  Gmail or the state files. Cover new write paths with a dry-run test.
+- Use Go via goenv (`.go-version`).
 - Commit messages use [gitmoji](https://gitmoji.dev/) and English, e.g.
   `✨ Add IMAP source`.
 - Comments only where the code cannot speak for itself; keep them short.
