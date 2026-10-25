@@ -33,6 +33,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "auth" {
+		if err := runAuth(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
 	}
@@ -64,7 +71,7 @@ func run(log *slog.Logger) error {
 		log.Warn("DRY RUN: sources and Gmail are only read, nothing is imported, labeled, deleted or saved")
 	}
 
-	tokens, err := gmailapi.NewTokenStore(filepath.Join(dataDir, "tokens"))
+	tokens, err := gmailapi.NewTokenStore(env("TOKEN_DIR", filepath.Join(dataDir, "tokens")))
 	if err != nil {
 		return err
 	}

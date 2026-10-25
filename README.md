@@ -119,7 +119,78 @@ Instead of the file, you can set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
 ## Authorizing Gmail accounts
 
-Each Gmail account with `method: api` has to be authorized once:
+The same binary is both the service and the OAuth CLI: without arguments it
+runs the service; `gmail-poppers auth` authorizes one account without starting
+the service or reading the service YAML. Both the CLI and web flow are supported.
+Use one Google Cloud project and one **Desktop app** OAuth client for all your
+Gmail accounts, but authorize each account separately.
+
+### CLI on your laptop (recommended for Raspberry Pi / Portainer)
+
+Run the CLI on the computer where you use your browser, not inside the RPi
+container. Build the binary locally with Go (on Windows, use
+`-o gmail-poppers.exe`):
+
+```sh
+go build -o gmail-poppers ./cmd/gmail-poppers
+./gmail-poppers auth --account private@gmail.com --client-secret ./client_secret.json --token-dir ./tokens
+./gmail-poppers auth --account second@gmail.com --client-secret ./client_secret.json --token-dir ./tokens
+```
+
+For each command, the browser opens Google sign-in. Sign in as the requested
+account and grant access. The CLI receives the callback on a temporary port
+bound only to `127.0.0.1`, checks the account, and saves its token file with mode
+0600. There is no URL to paste. If the browser does not open, open the printed
+URL manually **on the same computer**. `--no-browser` disables automatic browser
+launch; `auth --help` lists the options. Authorization times out after five
+minutes and can be cancelled with Ctrl+C.
+
+Transfer the generated files securely to the RPi, for example with `scp`:
+
+```sh
+ssh pi@raspberrypi 'mkdir -p ~/gmail-poppers-tokens && chmod 700 ~/gmail-poppers-tokens'
+scp ./tokens/*.token.json pi@raspberrypi:~/gmail-poppers-tokens/
+```
+
+On the RPi, stop the container before replacing tokens for an existing account.
+Move the files into a dedicated directory and give the container's nonroot user
+(UID/GID 65532) access. Run these commands yourself on the RPi:
+
+```sh
+sudo mkdir -p /opt/gmail-poppers/tokens
+sudo cp ~/gmail-poppers-tokens/*.token.json /opt/gmail-poppers/tokens/
+sudo chown -R 65532:65532 /opt/gmail-poppers/tokens
+sudo chmod 700 /opt/gmail-poppers/tokens
+sudo chmod 600 /opt/gmail-poppers/tokens/*.token.json
+rm ~/gmail-poppers-tokens/*.token.json
+```
+
+Add the token mount and environment variable to the service in your Portainer
+stack (keep its other mounts and settings):
+
+```yaml
+environment:
+  TOKEN_DIR: /tokens
+  GOOGLE_CLIENT_SECRET_FILE: /config/client_secret.json
+volumes:
+  - /opt/gmail-poppers/tokens:/tokens
+```
+
+Mount the same OAuth client JSON read-only under `/config` as before. The service
+still needs that client to refresh tokens. The token mount must be **writable**
+because refreshed tokens are saved there automatically. Add each Gmail address
+to `accounts` in your YAML with `method: api`; do not paste tokens into the YAML.
+Start or redeploy the container after copying tokens. No SSH tunnel, public
+callback URL, or browser on the RPi is required.
+
+Keep the token files private: they grant access to the corresponding Gmail
+account. To re-authorize later, repeat the CLI flow and replace that account's
+file while the service is stopped, then restart it. The web flow below can also
+re-authorize an account directly on the service.
+
+### Web UI (alternative)
+
+Each Gmail account with `method: api` can also be authorized in the service UI:
 
 1. Open the web UI (`http://<host>:8080`) and click **Authorize** next to the account.
 2. Click **Open the Google sign-in page** and sign in with that Gmail account.
@@ -129,8 +200,9 @@ Each Gmail account with `method: api` has to be authorized once:
 4. Copy the **complete URL** from the browser's address bar, paste it into the
    form and click **Finish authorization**.
 
-The token is stored in `/data/tokens/<gmail>.token.json` (mode 0600) and is
-refreshed automatically. If you signed in with a different Google account
+The token is stored in `TOKEN_DIR` (default `/data/tokens`) as
+`<gmail>.token.json` (mode 0600) and is refreshed automatically. Both flows use
+the same token format. If you signed in with a different Google account
 than the one being authorized, the authorization is rejected.
 
 ## Alternative: method `imap`
@@ -189,6 +261,7 @@ Unknown fields are reported as errors, so typos don't go unnoticed.
 |---|---|---|
 | `CONFIG_PATH` | `/config/config.yaml` | Path to the configuration file |
 | `DATA_DIR` | `/data` | State and OAuth tokens. Mount a volume here. |
+| `TOKEN_DIR` | `${DATA_DIR}/tokens` | Override token storage, shared by the service and web UI. CLI default: `./tokens`. |
 | `HTTP_ADDR` | `:8080` | Listen address of the web UI and status endpoints |
 | `DRY_RUN` | `false` | `true`: read only, see [Dry run](#dry-run) |
 | `GATUS_MODE` | `pull` | `pull`, `push` or `both` |

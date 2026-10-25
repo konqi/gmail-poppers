@@ -1,5 +1,6 @@
 # Runtime data (state, OAuth tokens)
 /data/
+/tokens/
 
 # Build output
 /bin/
