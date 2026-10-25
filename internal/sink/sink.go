@@ -8,11 +8,13 @@ import (
 
 type Sink interface {
 	// Open prepares a session for one polling run; it also validates credentials.
-	Open(ctx context.Context) (Session, error)
+	// In dry-run mode the session only performs read operations.
+	Open(ctx context.Context, dryRun bool) (Session, error)
 }
 
 type Session interface {
 	// Import inserts a raw RFC 5322 message into the inbox as unread.
+	// In dry-run mode it only checks the label and writes nothing.
 	Import(ctx context.Context, raw []byte, label string) error
 	Close() error
 }

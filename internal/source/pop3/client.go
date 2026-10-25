@@ -88,6 +88,13 @@ func (c *client) retr(n int) ([]byte, error) {
 	return c.readMultiline()
 }
 
+func (c *client) top(n, lines int) ([]byte, error) {
+	if _, err := c.cmd("TOP " + strconv.Itoa(n) + " " + strconv.Itoa(lines)); err != nil {
+		return nil, err
+	}
+	return c.readMultiline()
+}
+
 func (c *client) dele(n int) error {
 	_, err := c.cmd("DELE " + strconv.Itoa(n))
 	return err

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,11 +18,12 @@ import (
 )
 
 type fakeServer struct {
-	mu      sync.Mutex
-	msgs    map[string]string // uid -> body
-	order   []string
-	deleted []string
-	ln      net.Listener
+	mu        sync.Mutex
+	msgs      map[string]string // uid -> body
+	order     []string
+	deleted   []string
+	retrCount int
+	ln        net.Listener
 }
 
 func startServer(t *testing.T) *fakeServer {
@@ -85,10 +87,16 @@ func (s *fakeServer) serve(conn net.Conn) {
 				w(strconv.Itoa(i+1) + " " + uid)
 			}
 			w(".")
-		case "RETR":
+		case "RETR", "TOP":
 			n, _ := strconv.Atoi(f[1])
 			s.mu.Lock()
 			body := s.msgs[snapshot[n-1]]
+			if f[0] == "RETR" {
+				s.retrCount++
+			} else {
+				body, _, _ = strings.Cut(body, "\r\n\r\n")
+				body += "\r\n"
+			}
 			s.mu.Unlock()
 			w("+OK")
 			for _, l := range strings.Split(body, "\r\n") {
@@ -203,6 +211,31 @@ func TestLoginErrorHasContextAndNoPassword(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "wrong-pw") {
 		t.Fatal("password leaked into error")
+	}
+}
+
+func TestDryRunDoesNotDeleteOrPersist(t *testing.T) {
+	srv := startServer(t)
+	srv.add("u1", msg("1", "a"))
+	cfg := &config.Source{Name: "t", Server: "127.0.0.1", Port: srv.port(), TLS: config.TLSNone,
+		User: "me", Password: "secret", InitialSync: config.InitialSyncAll, DeleteAfterImport: true}
+	dir := t.TempDir()
+	st, _ := state.Open(dir, "t")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for i := 0; i < 2; i++ {
+		p := &source.Processor{State: st, Sink: &recSession{}, InitialSync: cfg.InitialSync, DryRun: true, Log: log}
+		if err := New(cfg, log).Fetch(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Result.Imported != 1 || p.Result.Deleted != 1 {
+			t.Fatalf("run %d: result = %+v", i, p.Result)
+		}
+	}
+	if len(srv.deleted) != 0 || srv.retrCount != 0 {
+		t.Fatalf("dry run deleted %v, RETR count %d", srv.deleted, srv.retrCount)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatal("dry run wrote state")
 	}
 }
 

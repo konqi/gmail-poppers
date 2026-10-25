@@ -34,7 +34,7 @@ func New(email, appPassword string, log *slog.Logger) *Sink {
 	}
 }
 
-func (s *Sink) Open(ctx context.Context) (sink.Session, error) {
+func (s *Sink) Open(ctx context.Context, dryRun bool) (sink.Session, error) {
 	c, err := imapsrc.Dial(ctx, s.endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("gmail imap connect: %w", err)
@@ -43,16 +43,17 @@ func (s *Sink) Open(ctx context.Context) (sink.Session, error) {
 		c.Close()
 		return nil, fmt.Errorf("gmail imap login (check the app password): %w", err)
 	}
-	if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+	if _, err := c.Select("INBOX", &imap.SelectOptions{ReadOnly: dryRun}).Wait(); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("gmail imap select INBOX: %w", err)
 	}
-	return &session{c: c, log: s.log}, nil
+	return &session{c: c, log: s.log, dryRun: dryRun}, nil
 }
 
 type session struct {
 	c       *imapclient.Client
 	log     *slog.Logger
+	dryRun  bool
 	folders map[string]bool
 }
 
@@ -64,6 +65,13 @@ func (s *session) Close() error {
 func (s *session) Import(ctx context.Context, raw []byte, label string) error {
 	stop := context.AfterFunc(ctx, func() { s.c.Close() })
 	defer stop()
+
+	if s.dryRun {
+		if label == "" {
+			return nil
+		}
+		return s.ensureFolder(label)
+	}
 
 	cmd := s.c.Append("INBOX", int64(len(raw)), &imap.AppendOptions{Time: messageDate(raw)})
 	if _, err := cmd.Write(raw); err != nil {
@@ -108,6 +116,11 @@ func (s *session) ensureFolder(name string) error {
 		}
 	}
 	if s.folders[name] {
+		return nil
+	}
+	if s.dryRun {
+		s.log.Info("dry run: would create Gmail label", "label", name)
+		s.folders[name] = true
 		return nil
 	}
 	if err := s.c.Create(name, nil).Wait(); err != nil {

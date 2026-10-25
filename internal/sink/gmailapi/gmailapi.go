@@ -41,7 +41,7 @@ func (s *Sink) Reset() {
 	s.svc, s.ts, s.labels = nil, nil, nil
 }
 
-func (s *Sink) Open(ctx context.Context) (sink.Session, error) {
+func (s *Sink) Open(ctx context.Context, dryRun bool) (sink.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.svc == nil {
@@ -65,10 +65,13 @@ func (s *Sink) Open(ctx context.Context) (sink.Session, error) {
 	if _, err := s.ts.Token(); err != nil {
 		return nil, describe(err)
 	}
-	return session{s}, nil
+	return session{s: s, dryRun: dryRun}, nil
 }
 
-type session struct{ s *Sink }
+type session struct {
+	s      *Sink
+	dryRun bool
+}
 
 func (session) Close() error { return nil }
 
@@ -76,11 +79,14 @@ func (ss session) Import(ctx context.Context, raw []byte, label string) error {
 	s := ss.s
 	ids := []string{"INBOX", "UNREAD"}
 	if label != "" {
-		id, err := s.labelID(ctx, label)
+		id, err := s.labelID(ctx, label, !ss.dryRun)
 		if err != nil {
 			return err
 		}
 		ids = append(ids, id)
+	}
+	if ss.dryRun {
+		return nil
 	}
 	s.mu.Lock()
 	svc := s.svc
@@ -104,7 +110,7 @@ func (ss session) Import(ctx context.Context, raw []byte, label string) error {
 	return nil
 }
 
-func (s *Sink) labelID(ctx context.Context, name string) (string, error) {
+func (s *Sink) labelID(ctx context.Context, name string, create bool) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if id, ok := s.labels[name]; ok {
@@ -118,6 +124,11 @@ func (s *Sink) labelID(ctx context.Context, name string) (string, error) {
 	}
 	if id, ok := s.labels[name]; ok {
 		return id, nil
+	}
+	if !create {
+		s.log.Info("dry run: would create Gmail label", "label", name)
+		s.labels[name] = ""
+		return "", nil
 	}
 	l, err := s.svc.Users.Labels.Create("me", &gmail.Label{
 		Name:                  name,

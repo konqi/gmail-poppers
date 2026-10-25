@@ -83,7 +83,7 @@ func flagsIn(t *testing.T, addr, folder string) [][]imap.Flag {
 func TestImportUnreadWithLabel(t *testing.T) {
 	addr := start(t)
 	s := testSink(addr, "app-pw")
-	sess, err := s.Open(context.Background())
+	sess, err := s.Open(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,8 +109,29 @@ func TestImportUnreadWithLabel(t *testing.T) {
 
 func TestLoginErrorMentionsAppPassword(t *testing.T) {
 	addr := start(t)
-	_, err := testSink(addr, "wrong").Open(context.Background())
+	_, err := testSink(addr, "wrong").Open(context.Background(), false)
 	if err == nil || !strings.Contains(err.Error(), "app password") || strings.Contains(err.Error(), "wrong") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDryRunWritesNothing(t *testing.T) {
+	addr := start(t)
+	sess, err := testSink(addr, "app-pw").Open(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Import(context.Background(), []byte("Subject: x\r\n\r\n"), "telekom"); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+	if n := len(flagsIn(t, addr, "INBOX")); n != 0 {
+		t.Fatalf("dry run appended %d messages", n)
+	}
+	c, _ := imapclient.DialInsecure(addr, nil)
+	defer c.Close()
+	c.Login("me@gmail.com", "app-pw").Wait()
+	if _, err := c.Select("telekom", nil).Wait(); err == nil {
+		t.Fatal("dry run created label folder")
 	}
 }

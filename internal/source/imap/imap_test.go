@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"testing"
 
@@ -162,6 +163,33 @@ func TestFetchAllWithDelete(t *testing.T) {
 	}
 	if n := srv.count(t, "INBOX"); n != 0 {
 		t.Fatalf("%d messages left after delete", n)
+	}
+}
+
+func TestDryRunDoesNotDeleteOrPersist(t *testing.T) {
+	srv := startServer(t)
+	srv.add(t, "INBOX", msg("a"))
+	cfg := &config.Source{Name: "t", Server: "127.0.0.1", Port: srv.port, TLS: config.TLSNone,
+		User: "me", Password: "secret", Folders: []string{"INBOX"}, InitialSync: config.InitialSyncAll, DeleteAfterImport: true}
+	dir := t.TempDir()
+	st, _ := state.Open(dir, "t")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sess := &recSession{}
+	p := &source.Processor{State: st, Sink: sess, InitialSync: cfg.InitialSync, DryRun: true, Log: log}
+	if err := New(cfg, log).Fetch(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Result.Imported != 1 || p.Result.Deleted != 1 {
+		t.Fatalf("result = %+v", p.Result)
+	}
+	if strings.Contains(sess.got[0], "body") {
+		t.Fatal("dry run fetched the full message")
+	}
+	if srv.count(t, "INBOX") != 1 {
+		t.Fatal("dry run deleted messages")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatal("dry run wrote state")
 	}
 }
 

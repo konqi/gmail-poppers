@@ -9,7 +9,6 @@ import (
 	"gmail-poppers/internal/config"
 	"gmail-poppers/internal/mailconn"
 	"gmail-poppers/internal/source"
-	"gmail-poppers/internal/state"
 )
 
 type Source struct {
@@ -46,14 +45,14 @@ func (s *Source) Fetch(ctx context.Context, p *source.Processor) error {
 	}
 	p.State.Prune("", present)
 
-	if !p.State.Initialized("") {
-		p.State.SetInitialized("")
+	if !p.Initialized("") {
+		p.SetInitialized("")
 		if p.InitialSync == config.InitialSyncNewOnly {
 			for _, l := range list {
-				p.MarkBaseline(l.uid)
+				p.MarkBaseline(l.uid, "")
 			}
-			s.log.Info("first run: existing messages marked as seen", "count", len(list))
-			if err := p.State.Save(); err != nil {
+			s.log.Info("first run: existing messages marked as seen", "count", len(list), "dry_run", p.DryRun)
+			if err := p.Save(); err != nil {
 				return err
 			}
 			return quit(c)
@@ -62,24 +61,44 @@ func (s *Source) Fetch(ctx context.Context, p *source.Processor) error {
 
 	for _, l := range list {
 		if !p.Done(l.uid) {
-			raw, err := c.retr(l.num)
+			raw, err := s.retrieve(c, l.num, p.DryRun)
 			if err != nil {
-				return fmt.Errorf("pop3 retr: %w", err)
+				return err
 			}
 			if err := p.Handle(ctx, l.uid, raw); err != nil {
 				return err
 			}
 		}
-		if s.cfg.DeleteAfterImport && deletable(p.State.Status(l.uid)) {
-			if err := c.dele(l.num); err != nil {
-				return fmt.Errorf("pop3 dele: %w", err)
-			}
+		if !s.cfg.DeleteAfterImport || !p.Deletable(l.uid) {
+			continue
+		}
+		p.Result.Deleted++
+		if p.DryRun {
+			s.log.Info("dry run: would delete from server", "uid", l.uid)
+			continue
+		}
+		if err := c.dele(l.num); err != nil {
+			return fmt.Errorf("pop3 dele: %w", err)
 		}
 	}
-	if err := p.State.Save(); err != nil {
+	if err := p.Save(); err != nil {
 		return err
 	}
 	return quit(c)
+}
+
+// retrieve fetches the full message, or only the header in dry-run mode.
+func (s *Source) retrieve(c *client, num int, headerOnly bool) ([]byte, error) {
+	if headerOnly {
+		if raw, err := c.top(num, 0); err == nil {
+			return raw, nil
+		}
+	}
+	raw, err := c.retr(num)
+	if err != nil {
+		return nil, fmt.Errorf("pop3 retr: %w", err)
+	}
+	return raw, nil
 }
 
 func (s *Source) dial(ctx context.Context, e mailconn.Endpoint) (*client, error) {
@@ -107,8 +126,4 @@ func quit(c *client) error {
 		return fmt.Errorf("pop3 quit: %w", err)
 	}
 	return nil
-}
-
-func deletable(status string) bool {
-	return status == state.Imported || status == state.Duplicate
 }

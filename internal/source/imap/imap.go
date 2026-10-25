@@ -15,7 +15,6 @@ import (
 	"gmail-poppers/internal/config"
 	"gmail-poppers/internal/mailconn"
 	"gmail-poppers/internal/source"
-	"gmail-poppers/internal/state"
 )
 
 type Source struct {
@@ -68,7 +67,7 @@ func (s *Source) Fetch(ctx context.Context, p *source.Processor) error {
 }
 
 func (s *Source) fetchFolder(ctx context.Context, c *imapclient.Client, folder string, p *source.Processor) error {
-	sel, err := c.Select(folder, nil).Wait()
+	sel, err := c.Select(folder, &imap.SelectOptions{ReadOnly: p.DryRun}).Wait()
 	if err != nil {
 		return fmt.Errorf("select: %w", err)
 	}
@@ -89,18 +88,21 @@ func (s *Source) fetchFolder(ctx context.Context, c *imapclient.Client, folder s
 	// A changed UIDVALIDITY drops all old keys; Message-ID dedupe prevents re-imports.
 	p.State.Prune(prefix, present)
 
-	if !p.State.Initialized(folder) {
-		p.State.SetInitialized(folder)
+	if !p.Initialized(folder) {
+		p.SetInitialized(folder)
 		if p.InitialSync == config.InitialSyncNewOnly {
 			if err := s.baseline(c, uids, key, p); err != nil {
 				return err
 			}
-			s.log.Info("first run: existing messages marked as seen", "folder", folder, "count", len(uids))
-			return p.State.Save()
+			s.log.Info("first run: existing messages marked as seen", "folder", folder, "count", len(uids), "dry_run", p.DryRun)
+			return p.Save()
 		}
 	}
 
 	section := &imap.FetchItemBodySection{Peek: true}
+	if p.DryRun {
+		section.Specifier = imap.PartSpecifierHeader
+	}
 	var toDelete []imap.UID
 	for _, uid := range uids {
 		k := key(uid)
@@ -123,18 +125,21 @@ func (s *Source) fetchFolder(ctx context.Context, c *imapclient.Client, folder s
 				return err
 			}
 		}
-		if s.cfg.DeleteAfterImport {
-			if st := p.State.Status(k); st == state.Imported || st == state.Duplicate {
-				toDelete = append(toDelete, uid)
-			}
+		if s.cfg.DeleteAfterImport && p.Deletable(k) {
+			toDelete = append(toDelete, uid)
 		}
 	}
-	if len(toDelete) > 0 {
+	p.Result.Deleted += len(toDelete)
+	switch {
+	case len(toDelete) == 0:
+	case p.DryRun:
+		s.log.Info("dry run: would delete from server", "folder", folder, "count", len(toDelete))
+	default:
 		if err := s.delete(c, toDelete); err != nil {
 			return err
 		}
 	}
-	return p.State.Save()
+	return p.Save()
 }
 
 func (s *Source) baseline(c *imapclient.Client, uids []imap.UID, key func(imap.UID) string, p *source.Processor) error {
@@ -145,14 +150,12 @@ func (s *Source) baseline(c *imapclient.Client, uids []imap.UID, key func(imap.U
 	if err != nil {
 		return fmt.Errorf("fetch envelopes: %w", err)
 	}
-	now := time.Now()
 	for _, m := range msgs {
-		p.MarkBaseline(key(m.UID))
+		var hash string
 		if m.Envelope != nil {
-			if h := source.HashMessageID(m.Envelope.MessageID); h != "" {
-				p.State.AddMessageID(h, now)
-			}
+			hash = source.HashMessageID(m.Envelope.MessageID)
 		}
+		p.MarkBaseline(key(m.UID), hash)
 	}
 	return nil
 }
