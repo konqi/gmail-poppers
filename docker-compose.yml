@@ -2,6 +2,8 @@
 # Values like ${GATUS_TOKEN} are taken from the stack's environment variables.
 services:
   gmail-poppers:
+    # Prebuilt image: replace the two lines below with
+    # image: ghcr.io/konqi/gmail-poppers:latest
     build: .
     image: gmail-poppers:latest
     container_name: gmail-poppers

@@ -63,11 +63,23 @@ For every source, gmail-poppers runs this loop:
 6. Authorize every Gmail account that uses `method: api`. See [Authorizing Gmail accounts](#authorizing-gmail-accounts).
 7. When every source shows **OK**, set `DRY_RUN: "false"` and redeploy.
 
-### Building the image
+### Docker image
 
-The compose file builds the image from this repository (`build: .`). In
-Portainer, use a **Repository** stack that points to this git repository.
-Alternatively, build and tag it on the host yourself:
+Prebuilt multi-arch images (`linux/amd64`, `linux/arm64`, `linux/arm/v7`,
+so they also run on a Raspberry Pi) are published to the GitHub Container
+Registry:
+
+| Tag | Built from |
+|---|---|
+| `latest`, `main` | the `main` branch |
+| `1.2.3`, `1.2` | git tags `v1.2.3` |
+| `sha-<commit>` | every pushed commit |
+
+In [docker-compose.yml](docker-compose.yml), replace `build: .` with
+`image: ghcr.io/konqi/gmail-poppers:latest`. If the package is private, log
+in to `ghcr.io` in Portainer first (**Registries → Add registry**).
+
+To build the image yourself:
 
 ```sh
 docker build -t gmail-poppers:latest .
@@ -317,4 +329,14 @@ go vet ./...
 go run ./cmd/gmail-poppers   # with CONFIG_PATH, DATA_DIR, … set
 ```
 
+The [CI workflow](.github/workflows/ci.yml) runs on every pull request and
+push. It checks `gofmt`, `go mod tidy`, `go vet`, `staticcheck` and
+`govulncheck`, then runs the tests with the race detector and builds the
+Docker image for all platforms. Images are pushed only for `main` and `v*`
+tags.
+
 See [AGENTS.md](AGENTS.md) for conventions.
+
+## License
+
+[MIT](LICENSE)
