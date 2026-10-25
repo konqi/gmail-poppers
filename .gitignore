@@ -1,0 +1,12 @@
+# Runtime data (state, OAuth tokens)
+/data/
+
+# Build output
+/bin/
+
+# Local configuration and secrets
+/config.yaml
+/config/
+client_secret*.json
+*.token.json
+.env
