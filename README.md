@@ -62,18 +62,17 @@ For every source, gmail-poppers runs this loop:
 3. If you use `method: api`, follow [Google Cloud setup](#google-cloud-setup-method-api) and save the
    client file as `/opt/gmail-poppers/config/client_secret.json`.
 4. Authorize every Gmail account that uses `method: api` with the CLI and install
-  the token files. See [Authorizing Gmail accounts](#authorizing-gmail-accounts).
+   the token files. See [Authorizing Gmail accounts](#authorizing-gmail-accounts).
 5. Deploy [docker-compose.yml](docker-compose.yml) as a Portainer stack. Set the
-  referenced variables (`GATUS_TOKEN`, mailbox passwords, …)
-   in the stack's environment variables.
+   referenced variables, such as `GATUS_TOKEN` and mailbox passwords, in the
+   stack's environment variables.
 6. Start with `DRY_RUN: "true"` and check the container logs or Gatus.
 7. When every source reports success, set `DRY_RUN: "false"` and redeploy.
 
 ### Docker image
 
-Prebuilt multi-arch images (`linux/amd64`, `linux/arm64`, `linux/arm/v7`,
-so they also run on a Raspberry Pi) are published to the GitHub Container
-Registry:
+Prebuilt images for `linux/amd64`, `linux/arm64` and `linux/arm/v7`
+(including Raspberry Pi) are published to the GitHub Container Registry:
 
 | Tag | Built from |
 |---|---|
@@ -81,7 +80,7 @@ Registry:
 | `1.2.3`, `1.2` | git tags `v1.2.3` |
 | `sha-<commit>` | every pushed commit |
 
-In [docker-compose.yml](docker-compose.yml), replace `build: .` with
+In [docker-compose.yml](docker-compose.yml), remove `build: .` and set
 `image: ghcr.io/konqi/gmail-poppers:latest`. If the package is private, log
 in to `ghcr.io` in Portainer first (**Registries → Add registry**).
 
@@ -125,14 +124,11 @@ Instead of the file, you can set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
 ## Authorizing Gmail accounts
 
-The same binary is both the service and the OAuth CLI: without arguments it
-runs the service; `gmail-poppers auth` authorizes one account without starting
-the service or reading the service YAML. Authorization is CLI-only; the service
-has no web UI or HTTP configuration/authorization inputs.
-Use one Google Cloud project and one **Desktop app** OAuth client for all your
-Gmail accounts, but authorize each account separately.
+The same binary runs the service without arguments and authorizes accounts
+with `gmail-poppers auth`. Run authorization once per Gmail account using
+the **Desktop app** client created above.
 
-### CLI on your laptop (recommended for Raspberry Pi / Portainer)
+### Authorize locally
 
 Run the CLI on the computer where you use your browser, not inside the RPi
 container. Build the binary locally with Go (on Windows, use
@@ -146,11 +142,13 @@ go build -o gmail-poppers ./cmd/gmail-poppers
 
 For each command, the browser opens Google sign-in. Sign in as the requested
 account and grant access. The CLI receives the callback on a temporary port
-bound only to `127.0.0.1`, checks the account, and saves its token file with mode
-0600. There is no URL to paste. If the browser does not open, open the printed
+bound only to `127.0.0.1`, checks that the signed-in account matches `--account`,
+and saves `tokens/<gmail>.token.json` with mode 0600. If the browser does not open, open the printed
 URL manually **on the same computer**. `--no-browser` disables automatic browser
 launch; `auth --help` lists the options. Authorization times out after five
 minutes and can be cancelled with Ctrl+C.
+
+### Install tokens on the RPi
 
 Transfer the generated files securely to the RPi, for example with `scp`:
 
@@ -183,18 +181,13 @@ volumes:
   - /opt/gmail-poppers/tokens:/tokens
 ```
 
-Mount the same OAuth client JSON read-only under `/config` as before. The service
-still needs that client to refresh tokens. The token mount must be **writable**
-because refreshed tokens are saved there automatically. Add each Gmail address
-to `accounts` in your YAML with `method: api`; do not paste tokens into the YAML.
-Start or redeploy the container after copying tokens. No SSH tunnel, public
-callback URL, or browser on the RPi is required.
+Mount the same OAuth client JSON read-only under `/config`. The service uses it
+to refresh tokens, so the token mount must be **writable**. Add each Gmail address
+to `accounts` in your YAML with `method: api`, then start or redeploy the container.
+Keep tokens in their files rather than pasting them into the YAML.
 
-Keep the token files private: they grant access to the corresponding Gmail
-account. To re-authorize later, repeat the CLI flow and replace that account's
-file while the service is stopped, then restart it. The service reads tokens
-from `TOKEN_DIR` (default `/data/tokens`) and refreshes them automatically.
-Existing token files from earlier versions remain compatible.
+To re-authorize later, repeat the CLI flow, replace that account's token file
+while the service is stopped, and restart it.
 
 ## Alternative: method `imap`
 
@@ -287,7 +280,7 @@ external-endpoints:
 ```
 
 Set `GMAIL_POPPERS_GATUS_TOKEN` in Gatus' environment to the same value as
-`GATUS_TOKEN` in gmail-poppers. At startup, the snippet is also printed to the log.
+`GATUS_TOKEN` in gmail-poppers.
 
 ### Pull (`GATUS_MODE=pull`)
 
@@ -313,15 +306,13 @@ is the error message.
 ### HTTP exposure
 
 The service exposes only `GET /healthz` and, in `pull`/`both` mode,
-`GET /status` and `GET /status/<gmail>/<source>`. There are no web pages,
-OAuth routes, forms, or write endpoints. `UI_BASIC_AUTH` is no longer used.
+`GET /status` and `GET /status/<gmail>/<source>`.
 
 The example Compose stack uses push mode and does not publish a host port.
 The Docker healthcheck still reaches `/healthz` inside the container. For pull
 mode, put Gatus and gmail-poppers on the same Docker network so Gatus can use
 `http://gmail-poppers:8080`. If you need host access to status, add an explicit
-port mapping restricted to your trusted network. OAuth never needs that port:
-the CLI opens its own temporary loopback listener on your laptop.
+port mapping restricted to your trusted network.
 
 ## Dry run
 
@@ -336,9 +327,8 @@ With `DRY_RUN=true`, gmail-poppers performs every run as usual but only reads:
 - The log shows what *would* happen, e.g. `dry run: would import` with sender
   and subject, `would delete`, `would create Gmail label`.
 
-Status and Gatus reporting work as usual, so you can verify the whole setup,
-including credentials and TLS, before importing anything. Authorize accounts
-with the CLI and install their token files before starting a dry run.
+Authorize accounts and install their token files before starting a dry run.
+Status and Gatus reporting remain active so you can verify the setup.
 
 ## State and first run
 
@@ -389,12 +379,11 @@ Set `LOG_LEVEL=debug` for more details.
 
 ## Security notes
 
-- Keep status endpoints on a trusted network; status messages may contain account details.
-- The `/status` and `/healthz` endpoints are not password-protected, so Gatus and
-  Docker can reach them. They only contain status and error messages.
+- Keep status endpoints on a trusted network: they are unauthenticated and may
+  reveal account details and error messages.
 - Mount the config read-only and keep passwords in environment variables.
-- OAuth tokens in `/data/tokens` give write access (insert only) to your
-  Gmail. Protect the volume accordingly.
+- Protect the token directory (`TOKEN_DIR`, default `/data/tokens`): its files
+  grant access to import mail and manage Gmail labels.
 - The container runs as a non-root user on a distroless base image.
 
 ## Development
