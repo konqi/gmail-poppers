@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 // RedirectURL is a loopback address nobody listens on; the user copies the
@@ -29,26 +28,50 @@ var Scopes = []string{
 
 var ErrNotAuthorized = errors.New("account not authorized yet, open the web UI and click \"Authorize\"")
 
+var googleEndpoint = oauth2.Endpoint{
+	AuthURL:   "https://accounts.google.com/o/oauth2/auth",
+	TokenURL:  "https://oauth2.googleapis.com/token",
+	AuthStyle: oauth2.AuthStyleInParams,
+}
+
 // LoadOAuthConfig reads a Google "Desktop app" client secret file, or uses id/secret if file is empty.
 func LoadOAuthConfig(file, clientID, clientSecret string) (*oauth2.Config, error) {
-	var cfg *oauth2.Config
 	if file != "" {
 		b, err := os.ReadFile(file)
 		if err != nil {
 			return nil, fmt.Errorf("oauth client secret: %w", err)
 		}
-		cfg, err = google.ConfigFromJSON(b, Scopes...)
-		if err != nil {
+		var f struct {
+			Installed *clientJSON `json:"installed"`
+			Web       *clientJSON `json:"web"`
+		}
+		if err := json.Unmarshal(b, &f); err != nil {
 			return nil, fmt.Errorf("oauth client secret: %w", err)
 		}
-	} else {
-		if clientID == "" || clientSecret == "" {
-			return nil, errors.New("oauth: set GOOGLE_CLIENT_SECRET_FILE or GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET")
+		c := f.Installed
+		if c == nil {
+			c = f.Web
 		}
-		cfg = &oauth2.Config{ClientID: clientID, ClientSecret: clientSecret, Endpoint: google.Endpoint, Scopes: Scopes}
+		if c == nil {
+			return nil, errors.New("oauth client secret: file has no \"installed\" or \"web\" client")
+		}
+		clientID, clientSecret = c.ClientID, c.ClientSecret
 	}
-	cfg.RedirectURL = RedirectURL
-	return cfg, nil
+	if clientID == "" || clientSecret == "" {
+		return nil, errors.New("oauth: set GOOGLE_CLIENT_SECRET_FILE or GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET")
+	}
+	return &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint:     googleEndpoint,
+		Scopes:       Scopes,
+		RedirectURL:  RedirectURL,
+	}, nil
+}
+
+type clientJSON struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
 // TokenStore keeps one OAuth token file per Gmail account.
