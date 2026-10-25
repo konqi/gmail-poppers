@@ -6,6 +6,11 @@ feature: a small self-hosted service that regularly fetches mail from your
 other mailboxes (POP3 or IMAP) and puts it into Gmail, in the inbox and
 marked as unread, as if Gmail had fetched it itself.
 
+> **AI disclosure:** This service is effectively 100% vibe coded with AI.
+> The author needed a solution to a practical problem, and no existing tool
+> fitted the bill for this setup. If you object to AI-generated software for
+> ethical or any other reasons, you are entirely free not to use it.
+
 - Multiple Gmail accounts, each with any number of POP3/IMAP sources.
 - Runs as a single Docker container, configured with one YAML file.
 - Each source shows up separately in [Gatus](https://github.com/TwiN/gatus),
