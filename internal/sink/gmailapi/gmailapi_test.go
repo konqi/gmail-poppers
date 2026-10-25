@@ -63,7 +63,7 @@ func TestLoadOAuthConfig(t *testing.T) {
 		t.Fatal("expected error without credentials")
 	}
 	cfg, err := LoadOAuthConfig("", "id", "secret")
-	if err != nil || cfg.RedirectURL != RedirectURL || len(cfg.Scopes) != len(Scopes) {
+	if err != nil || cfg.RedirectURL != "" || len(cfg.Scopes) != len(Scopes) {
 		t.Fatalf("cfg = %+v, err = %v", cfg, err)
 	}
 	a := NewAuth(cfg, nil)

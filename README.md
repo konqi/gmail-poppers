@@ -39,7 +39,7 @@ For every source, gmail-poppers runs this loop:
 2. List all messages and skip those it has already handled. It remembers them in `/data/state`.
 3. Insert each new message into Gmail with the labels **INBOX** and **UNREAD**, plus an optional label such as `telekom`.
 4. Optionally delete the message on the source server.
-5. Report the result to Gatus and to the web UI.
+5. Report the result to Gatus and the read-only JSON status endpoints.
 
 ## Features
 
@@ -61,12 +61,13 @@ For every source, gmail-poppers runs this loop:
 2. Copy [config.example.yaml](config.example.yaml) to `/opt/gmail-poppers/config/config.yaml` and adjust it.
 3. If you use `method: api`, follow [Google Cloud setup](#google-cloud-setup-method-api) and save the
    client file as `/opt/gmail-poppers/config/client_secret.json`.
-4. Deploy [docker-compose.yml](docker-compose.yml) as a Portainer stack. Set the
-   referenced variables (`GATUS_TOKEN`, `UI_BASIC_AUTH`, mailbox passwords, …)
+4. Authorize every Gmail account that uses `method: api` with the CLI and install
+  the token files. See [Authorizing Gmail accounts](#authorizing-gmail-accounts).
+5. Deploy [docker-compose.yml](docker-compose.yml) as a Portainer stack. Set the
+  referenced variables (`GATUS_TOKEN`, mailbox passwords, …)
    in the stack's environment variables.
-5. Start with `DRY_RUN: "true"` and open `http://<host>:8080`.
-6. Authorize every Gmail account that uses `method: api`. See [Authorizing Gmail accounts](#authorizing-gmail-accounts).
-7. When every source shows **OK**, set `DRY_RUN: "false"` and redeploy.
+6. Start with `DRY_RUN: "true"` and check the container logs or Gatus.
+7. When every source reports success, set `DRY_RUN: "false"` and redeploy.
 
 ### Docker image
 
@@ -126,7 +127,8 @@ Instead of the file, you can set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
 The same binary is both the service and the OAuth CLI: without arguments it
 runs the service; `gmail-poppers auth` authorizes one account without starting
-the service or reading the service YAML. Both the CLI and web flow are supported.
+the service or reading the service YAML. Authorization is CLI-only; the service
+has no web UI or HTTP configuration/authorization inputs.
 Use one Google Cloud project and one **Desktop app** OAuth client for all your
 Gmail accounts, but authorize each account separately.
 
@@ -190,25 +192,9 @@ callback URL, or browser on the RPi is required.
 
 Keep the token files private: they grant access to the corresponding Gmail
 account. To re-authorize later, repeat the CLI flow and replace that account's
-file while the service is stopped, then restart it. The web flow below can also
-re-authorize an account directly on the service.
-
-### Web UI (alternative)
-
-Each Gmail account with `method: api` can also be authorized in the service UI:
-
-1. Open the web UI (`http://<host>:8080`) and click **Authorize** next to the account.
-2. Click **Open the Google sign-in page** and sign in with that Gmail account.
-   Accept the "unverified app" warning (**Advanced → Go to gmail-poppers**).
-3. After you grant access, Google redirects to `http://127.0.0.1:53682/…`.
-   That page fails to load, **which is expected**, because nothing listens there.
-4. Copy the **complete URL** from the browser's address bar, paste it into the
-   form and click **Finish authorization**.
-
-The token is stored in `TOKEN_DIR` (default `/data/tokens`) as
-`<gmail>.token.json` (mode 0600) and is refreshed automatically. Both flows use
-the same token format. If you signed in with a different Google account
-than the one being authorized, the authorization is rejected.
+file while the service is stopped, then restart it. The service reads tokens
+from `TOKEN_DIR` (default `/data/tokens`) and refreshes them automatically.
+Existing token files from earlier versions remain compatible.
 
 ## Alternative: method `imap`
 
@@ -266,15 +252,14 @@ Unknown fields are reported as errors, so typos don't go unnoticed.
 |---|---|---|
 | `CONFIG_PATH` | `/config/config.yaml` | Path to the configuration file |
 | `DATA_DIR` | `/data` | State and OAuth tokens. Mount a volume here. |
-| `TOKEN_DIR` | `${DATA_DIR}/tokens` | Override token storage, shared by the service and web UI. CLI default: `./tokens`. |
-| `HTTP_ADDR` | `:8080` | Listen address of the web UI and status endpoints |
+| `TOKEN_DIR` | `${DATA_DIR}/tokens` | Override service token storage. CLI default: `./tokens`. |
+| `HTTP_ADDR` | `:8080` | Listen address for read-only status and health endpoints |
 | `DRY_RUN` | `false` | `true`: read only, see [Dry run](#dry-run) |
 | `GATUS_MODE` | `pull` | `pull`, `push` or `both` |
 | `GATUS_URL` | | Base URL of Gatus, required for `push`/`both` |
 | `GATUS_TOKEN` | | Bearer token of the Gatus external endpoints |
 | `GOOGLE_CLIENT_SECRET_FILE` | | Path to the downloaded OAuth client JSON |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | | Alternative to the client file |
-| `UI_BASIC_AUTH` | | `user:password` protecting the web UI |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
 Any other variable can be referenced from the config as `${NAME}`.
@@ -282,8 +267,8 @@ Any other variable can be referenced from the config as `${NAME}`.
 ## Gatus integration
 
 Every source becomes its own Gatus endpoint. The Gmail address is the
-**group** and the source name is the **name**. The web UI page **/gatus**
-shows ready-to-paste configuration for your setup.
+**group** and the source name is the **name**. In push mode, startup logs
+include ready-to-paste external endpoint configuration for your setup.
 
 ### Push (`GATUS_MODE=push`)
 
@@ -325,6 +310,19 @@ endpoints:
 If a check fails, Gatus shows the actual value of `[BODY].message`, which
 is the error message.
 
+### HTTP exposure
+
+The service exposes only `GET /healthz` and, in `pull`/`both` mode,
+`GET /status` and `GET /status/<gmail>/<source>`. There are no web pages,
+OAuth routes, forms, or write endpoints. `UI_BASIC_AUTH` is no longer used.
+
+The example Compose stack uses push mode and does not publish a host port.
+The Docker healthcheck still reaches `/healthz` inside the container. For pull
+mode, put Gatus and gmail-poppers on the same Docker network so Gatus can use
+`http://gmail-poppers:8080`. If you need host access to status, add an explicit
+port mapping restricted to your trusted network. OAuth never needs that port:
+the CLI opens its own temporary loopback listener on your laptop.
+
 ## Dry run
 
 With `DRY_RUN=true`, gmail-poppers performs every run as usual but only reads:
@@ -339,8 +337,8 @@ With `DRY_RUN=true`, gmail-poppers performs every run as usual but only reads:
   and subject, `would delete`, `would create Gmail label`.
 
 Status and Gatus reporting work as usual, so you can verify the whole setup,
-including credentials and TLS, before importing anything. The OAuth
-authorization in the web UI also works in dry-run mode.
+including credentials and TLS, before importing anything. Authorize accounts
+with the CLI and install their token files before starting a dry run.
 
 ## State and first run
 
@@ -378,8 +376,8 @@ unencrypted connection unless you explicitly set `tls: none`.
 
 | Error | What to do |
 |---|---|
-| `gmail api: account not authorized yet` | Authorize the account in the web UI |
-| `gmail api: authorization expired or revoked` | Re-authorize. Make sure the OAuth app is **In production**. |
+| `gmail api: account not authorized yet` | Run `gmail-poppers auth`, install the token file, and restart the service |
+| `gmail api: authorization expired or revoked` | Re-authorize with the CLI and replace the token file. Make sure the OAuth app is **In production**. |
 | `gmail api: no OAuth client configured` | Set `GOOGLE_CLIENT_SECRET_FILE` and mount the file |
 | `gmail imap login (check the app password)` | Create a new app password for the Gmail account |
 | `pop3 login: server: …` / `imap login: …` | Wrong user or password, or POP3/IMAP access is disabled at the provider |
@@ -391,7 +389,7 @@ Set `LOG_LEVEL=debug` for more details.
 
 ## Security notes
 
-- Don't expose the web UI to the internet. Use it in your LAN and set `UI_BASIC_AUTH`.
+- Keep status endpoints on a trusted network; status messages may contain account details.
 - The `/status` and `/healthz` endpoints are not password-protected, so Gatus and
   Docker can reach them. They only contain status and error messages.
 - Mount the config read-only and keep passwords in environment variables.

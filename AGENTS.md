@@ -24,7 +24,7 @@ messages, error messages, web UI texts, examples and documentation.
 | `internal/runner` | Per-source polling loop |
 | `internal/status` | In-memory status registry |
 | `internal/gatus` | Gatus push client and endpoint snippet rendering |
-| `internal/web` | HTTP server: status endpoints, OAuth bootstrap UI |
+| `internal/web` | Read-only HTTP status and health endpoints |
 
 ## Conventions
 

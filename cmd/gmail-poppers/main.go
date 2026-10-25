@@ -75,7 +75,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	auth, sinks, apiSinks := buildSinks(cfg, tokens, log)
+	sinks := buildSinks(cfg, tokens, log)
 
 	reg := status.NewRegistry()
 	var reporters []runner.Reporter
@@ -86,7 +86,7 @@ func run(log *slog.Logger) error {
 			Client:  &http.Client{Timeout: 15 * time.Second},
 			Log:     log,
 		})
-		log.Info("add the following to your Gatus configuration (also shown at /gatus):\n" + gatus.RenderExternalEndpoints(cfg))
+		log.Info("add the following to your Gatus configuration:\n" + gatus.RenderExternalEndpoints(cfg))
 	}
 
 	var jobs []*runner.Job
@@ -116,8 +116,7 @@ func run(log *slog.Logger) error {
 	srv := &http.Server{
 		Addr: env("HTTP_ADDR", ":8080"),
 		Handler: (&web.Server{
-			Cfg: cfg, Status: reg, Auth: auth, Tokens: tokens, APISinks: apiSinks,
-			GatusMode: mode, DryRun: dryRun, BasicAuth: os.Getenv("UI_BASIC_AUTH"), Log: log,
+			Status: reg, GatusMode: mode, DryRun: dryRun,
 		}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -154,23 +153,20 @@ func run(log *slog.Logger) error {
 	return nil
 }
 
-func buildSinks(cfg *config.Config, tokens *gmailapi.TokenStore, log *slog.Logger) (*gmailapi.Auth, map[string]sink.Sink, map[string]*gmailapi.Sink) {
+func buildSinks(cfg *config.Config, tokens *gmailapi.TokenStore, log *slog.Logger) map[string]sink.Sink {
 	sinks := map[string]sink.Sink{}
-	apiSinks := map[string]*gmailapi.Sink{}
 
 	var oauthCfg *oauth2.Config
 	needsOAuth := false
 	for _, a := range cfg.Accounts {
 		needsOAuth = needsOAuth || a.Method == config.MethodAPI
 	}
-	var auth *gmailapi.Auth
 	if needsOAuth {
 		oc, err := gmailapi.LoadOAuthConfig(os.Getenv("GOOGLE_CLIENT_SECRET_FILE"), os.Getenv("GOOGLE_CLIENT_ID"), os.Getenv("GOOGLE_CLIENT_SECRET"))
 		if err != nil {
 			log.Error("Gmail API accounts cannot work without an OAuth client", "error", err)
 		} else {
 			oauthCfg = oc
-			auth = gmailapi.NewAuth(oc, tokens)
 		}
 	}
 
@@ -182,12 +178,11 @@ func buildSinks(cfg *config.Config, tokens *gmailapi.TokenStore, log *slog.Logge
 		case oauthCfg != nil:
 			s := gmailapi.New(a.Email, oauthCfg, tokens, alog)
 			sinks[a.Email] = s
-			apiSinks[a.Email] = s
 		default:
 			sinks[a.Email] = failingSink{errors.New("gmail api: no OAuth client configured, set GOOGLE_CLIENT_SECRET_FILE or GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET")}
 		}
 	}
-	return auth, sinks, apiSinks
+	return sinks
 }
 
 type failingSink struct{ err error }

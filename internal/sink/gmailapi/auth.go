@@ -15,10 +15,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// RedirectURL is a loopback address nobody listens on; the user copies the
-// resulting URL from the browser back into the web UI.
-const RedirectURL = "http://127.0.0.1:53682/"
-
 var Scopes = []string{
 	"https://www.googleapis.com/auth/gmail.insert",
 	"https://www.googleapis.com/auth/gmail.labels",
@@ -26,7 +22,7 @@ var Scopes = []string{
 	"email",
 }
 
-var ErrNotAuthorized = errors.New("account not authorized yet, open the web UI and click \"Authorize\"")
+var ErrNotAuthorized = errors.New("account not authorized yet, run gmail-poppers auth and install the token file")
 
 var googleEndpoint = oauth2.Endpoint{
 	AuthURL:   "https://accounts.google.com/o/oauth2/auth",
@@ -65,7 +61,6 @@ func LoadOAuthConfig(file, clientID, clientSecret string) (*oauth2.Config, error
 		ClientSecret: clientSecret,
 		Endpoint:     googleEndpoint,
 		Scopes:       Scopes,
-		RedirectURL:  RedirectURL,
 	}, nil
 }
 

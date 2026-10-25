@@ -8,15 +8,12 @@ services:
     image: gmail-poppers:latest
     container_name: gmail-poppers
     restart: unless-stopped
-    ports:
-      - "8080:8080"
     environment:
       # pull | push | both
       GATUS_MODE: push
       GATUS_URL: http://gatus:8080
       GATUS_TOKEN: ${GATUS_TOKEN}
       GOOGLE_CLIENT_SECRET_FILE: /config/client_secret.json
-      UI_BASIC_AUTH: ${UI_BASIC_AUTH}
       # Set to "true" to only read from all servers without changing anything.
       DRY_RUN: "false"
       LOG_LEVEL: info

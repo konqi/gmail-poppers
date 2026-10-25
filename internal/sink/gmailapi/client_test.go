@@ -151,7 +151,7 @@ func TestLoadOAuthConfigFromFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "client_secret.json")
 	os.WriteFile(p, []byte(`{"installed":{"client_id":"cid","client_secret":"cs","redirect_uris":["http://localhost"]}}`), 0o600)
 	cfg, err := LoadOAuthConfig(p, "", "")
-	if err != nil || cfg.ClientID != "cid" || cfg.ClientSecret != "cs" || cfg.RedirectURL != RedirectURL || cfg.Endpoint.TokenURL == "" {
+	if err != nil || cfg.ClientID != "cid" || cfg.ClientSecret != "cs" || cfg.RedirectURL != "" || cfg.Endpoint.TokenURL == "" {
 		t.Fatalf("cfg = %+v, err = %v", cfg, err)
 	}
 	os.WriteFile(p, []byte(`{"other":{}}`), 0o600)
