@@ -1,0 +1,29 @@
+# Example stack for Docker Compose / Portainer.
+# Values like ${GATUS_TOKEN} are taken from the stack's environment variables.
+services:
+  gmail-poppers:
+    build: .
+    image: gmail-poppers:latest
+    container_name: gmail-poppers
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # pull | push | both
+      GATUS_MODE: push
+      GATUS_URL: http://gatus:8080
+      GATUS_TOKEN: ${GATUS_TOKEN}
+      GOOGLE_CLIENT_SECRET_FILE: /config/client_secret.json
+      UI_BASIC_AUTH: ${UI_BASIC_AUTH}
+      # Set to "true" to only read from all servers without changing anything.
+      DRY_RUN: "false"
+      LOG_LEVEL: info
+      # Secrets referenced from config.yaml as ${...}
+      TELEKOM_PASSWORD: ${TELEKOM_PASSWORD}
+      GMX_PASSWORD: ${GMX_PASSWORD}
+    volumes:
+      - /opt/gmail-poppers/config:/config:ro
+      - gmail-poppers-data:/data
+
+volumes:
+  gmail-poppers-data:

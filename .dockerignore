@@ -1,0 +1,8 @@
+.git
+bin
+data
+config
+config.yaml
+client_secret*.json
+*.token.json
+.env
