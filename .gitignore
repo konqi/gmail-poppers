@@ -11,3 +11,4 @@
 client_secret*.json
 *.token.json
 .env
+gmail-poppers
