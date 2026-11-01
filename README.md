@@ -358,8 +358,7 @@ routes:
 ```
 
 See [config.example.yaml](config.example.yaml) for a complete example using this
-schema. For an existing installation, read the
-[transition warning](#changing-an-existing-installation) before replacing your configuration.
+schema.
 
 ### `defaults`
 
@@ -543,16 +542,11 @@ Gmail import and local state saving are not one transaction. An import can
 succeed before a crash or ambiguous response leaves its progress unrecorded,
 so UID/UIDL and Message-ID deduplication cannot guarantee exactly-once delivery.
 
-### Changing an existing installation
+If state is lost, `new_only` establishes a fresh baseline and skips all messages
+currently on the source, including mail not yet imported. Back up state along
+with configuration and tokens.
 
-**Stop the service, back up config, tokens and state, and evaluate pending mail
-before transitioning.** Convert the old nested configuration manually to
-targets, sources and routes; the parser does not migrate it. Old state files
-remain untouched, but the new source-email identity selects a different hashed
-state file. With `new_only`, the fresh baseline skips **all existing messages,
-including a pending import backlog**, not just previously imported mail. Decide
-how to preserve or import that backlog before restarting; `all` can reimport
-mail already delivered to Gmail.
+### Multiple instances
 
 To deliver one source to multiple targets, run separate instances with
 independent state and token directories. Disable source deletion in every
