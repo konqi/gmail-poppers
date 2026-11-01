@@ -357,9 +357,9 @@ routes:
     delete_after_import: false
 ```
 
-The checked-in [config.example.yaml](config.example.yaml) uses the older nested
-layout; use the schema above instead. For an existing installation, read the
-[transition warning](#changing-an-existing-installation) before replacing it.
+See [config.example.yaml](config.example.yaml) for a complete example using this
+schema. For an existing installation, read the
+[transition warning](#changing-an-existing-installation) before replacing your configuration.
 
 ### `defaults`
 
