@@ -40,12 +40,12 @@ from the project's design discussions. Do not revive superseded plans.
 When relevant work is substantial, use the following custom agents as subagents
 by their exact names. The main agent owns production-code changes and integration.
 
-| Agent | Delegate |
-|---|---|
-| [README Maintainer](agents/readme.agent.md) | README updates and verification against implemented behavior |
-| [CI-CD Maintainer](agents/ci-cd.agent.md) | GitHub Actions, quality gates, Docker builds, and GHCR configuration |
-| [Test Runner](agents/test-runner.agent.md) | Existing tests and checks; no code edits or commits |
-| [Test Writer](agents/test-writer.agent.md) | Focused regression/unit tests; no production-code edits |
+| Agent                                       | Delegate                                                             |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| [README Maintainer](agents/readme.agent.md) | README updates and verification against implemented behavior         |
+| [CI-CD Maintainer](agents/ci-cd.agent.md)   | GitHub Actions, quality gates, Docker builds, and GHCR configuration |
+| [Test Runner](agents/test-runner.agent.md)  | Existing tests and checks; no code edits or commits                  |
+| [Test Writer](agents/test-writer.agent.md)  | Focused regression/unit tests; no production-code edits              |
 
 - Do not delegate trivial edits merely to involve an agent. If the required agent
   is unavailable, state that and perform the bounded task yourself; do not claim
