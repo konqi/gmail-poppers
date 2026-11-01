@@ -3,13 +3,18 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -367,6 +372,378 @@ func (transport setupTransport) RoundTrip(request *http.Request) (*http.Response
 	return transport(request)
 }
 
+type setupAuthorizationWriter struct {
+	bytes.Buffer
+	testing  *testing.T
+	callback func(url.Values)
+	launched bool
+}
+
+func (writer *setupAuthorizationWriter) Write(data []byte) (int, error) {
+	count, err := writer.Buffer.Write(data)
+	if !writer.launched {
+		for _, field := range strings.Fields(writer.String()) {
+			parsed, parseErr := url.Parse(field)
+			if parseErr != nil || parsed.Host != "accounts.google.com" {
+				continue
+			}
+			query := parsed.Query()
+			redirect, parseErr := url.Parse(query.Get("redirect_uri"))
+			if parseErr != nil || redirect.Scheme != "http" || redirect.Hostname() != "127.0.0.1" || redirect.Port() == "" || redirect.Path != "/" {
+				writer.testing.Fatal("authorization must use a loopback callback")
+			}
+			if query.Get("state") == "" || query.Get("code_challenge") == "" || query.Get("code_challenge_method") != "S256" || query.Get("login_hint") != "me@gmail.com" || query.Get("access_type") != "offline" {
+				writer.testing.Fatal("authorization URL lost state, PKCE, account hint or offline access")
+			}
+			writer.launched = true
+			writer.callback(query)
+			break
+		}
+	}
+	return count, err
+}
+
+func setupAuthorizationCallback(t *testing.T, query url.Values, denied bool) {
+	t.Helper()
+	values := url.Values{"state": {query.Get("state")}, "code": {"synthetic-code"}}
+	if denied {
+		values.Del("code")
+		values.Set("error", "access_denied")
+	}
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	response, err := client.Get(query.Get("redirect_uri") + "?" + values.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("loopback callback status = %d", response.StatusCode)
+	}
+}
+
+func setupReauthorizationFixture(t *testing.T) (string, []string, string) {
+	t.Helper()
+	dir := startupTestEnvironment(t)
+	t.Setenv("DRY_RUN", "false")
+	path := filepath.Join(dir, "config.yaml")
+	writeStartupTestFile(t, path, `# Keep this comment and the original formatting.
+accounts:
+  targets: {me@gmail.com: {method: api}, imap@gmail.com: {method: imap, app_password: synthetic}}
+  sources:
+    source@example.com: {type: pop3, server: 127.0.0.1, user: synthetic, password: synthetic}
+routes: # Existing source route must never move.
+  source@example.com: {target: me@gmail.com, label: "Original label", initial_sync: all, delete_after_import: true}
+`)
+	writeStartupTestFile(t, filepath.Join(dir, ".env"), "# Preserve dotenv too.\nKEEP=synthetic\n")
+	client := filepath.Join(dir, "client_secret.json")
+	writeStartupTestFile(t, client, `{"installed":{"client_id":"synthetic-id","client_secret":"synthetic-secret"}}`)
+	tokens := filepath.Join(dir, "tokens")
+	store, err := gmailapi.NewTokenStore(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save("me@gmail.com", &oauth2.Token{AccessToken: "old-access", RefreshToken: "old-refresh", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	return dir, []string{"target", "me@gmail.com", "--reauthorize", "--config", path, "--client-secret", client, "--token-dir", tokens, "--check-timeout", "1s", "--no-browser"}, filepath.Join(tokens, "me@gmail.com.token.json")
+}
+
+func TestSetupReauthorize(t *testing.T) {
+	for _, test := range []struct {
+		name, want string
+		labels     int
+	}{
+		{name: "existing token", labels: 1},
+		{name: "missing token", labels: 1},
+		{name: "corrupt old token", labels: 1},
+		{name: "insecure old token", labels: 1},
+		{name: "new API target", labels: 1},
+		{name: "new API target labels failure", want: "connection check failed", labels: 1},
+		{name: "new API target token appeared", want: "token file appeared", labels: 1},
+		{name: "explicit API mode", labels: 1},
+		{name: "token exchange failure", want: "oauth exchange"},
+		{name: "account mismatch", want: "signed in as"},
+		{name: "unverified account", want: "verified email"},
+		{name: "missing refresh token", want: "no refresh token"},
+		{name: "labels check failure", want: "connection check failed", labels: 1},
+		{name: "labels timeout", want: "connection check failed", labels: 1},
+		{name: "authorization denied", want: "denied"},
+		{name: "concurrent token edit", want: "token file changed", labels: 1},
+		{name: "concurrent token whitespace edit", want: "token file changed", labels: 1},
+		{name: "concurrent token creation", want: "token file changed", labels: 1},
+		{name: "concurrent empty token creation", want: "token file changed", labels: 1},
+		{name: "concurrent token deletion", want: "token file changed", labels: 1},
+		{name: "concurrent YAML edit", want: "files changed", labels: 1},
+		{name: "concurrent dotenv edit", want: "files changed", labels: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir, args, tokenPath := setupReauthorizationFixture(t)
+			newTarget := strings.HasPrefix(test.name, "new API target")
+			if newTarget {
+				args = append(args[:2], args[3:]...)
+				args = append(args, "--mode", "api")
+				writeStartupTestFile(t, filepath.Join(dir, "config.yaml"), `# Existing unmodified accounts and route.
+accounts:
+  targets: {imap@gmail.com: {method: imap, app_password: synthetic}}
+  sources: {source@example.com: {type: pop3, server: 127.0.0.1, user: synthetic, password: synthetic}}
+routes: {source@example.com: {target: imap@gmail.com, label: "Original label", initial_sync: all, delete_after_import: true}}
+`)
+			}
+			if newTarget || test.name == "missing token" || test.name == "concurrent token creation" || test.name == "concurrent empty token creation" {
+				if err := os.Remove(tokenPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "corrupt old token" {
+				writeStartupTestFile(t, tokenPath, "not JSON\n")
+			}
+			if test.name == "insecure old token" {
+				if err := os.Chmod(tokenPath, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "explicit API mode" {
+				args = append(args, "--mode", "api")
+			}
+			before := setupSnapshot(t, dir)
+			var authorization url.Values
+			var exchanges, labels int
+			previous := http.DefaultTransport
+			http.DefaultTransport = setupTransport(func(request *http.Request) (*http.Response, error) {
+				assertSetupSnapshot(t, dir, before)
+				status, body := http.StatusOK, `{"labels":[]}`
+				switch request.URL.String() {
+				case "https://oauth2.googleapis.com/token":
+					exchanges++
+					if request.Method != http.MethodPost {
+						t.Error("token exchange must use POST")
+					}
+					if err := request.ParseForm(); err != nil {
+						t.Fatal(err)
+					}
+					if request.Form.Get("client_id") != "synthetic-id" || request.Form.Get("client_secret") != "synthetic-secret" {
+						t.Error("token exchange did not use the configured synthetic OAuth client")
+					}
+					if request.Form.Get("grant_type") != "authorization_code" || request.Form.Get("code") != "synthetic-code" || request.Form.Get("redirect_uri") != authorization.Get("redirect_uri") || oauth2.S256ChallengeFromVerifier(request.Form.Get("code_verifier")) != authorization.Get("code_challenge") {
+						t.Error("token exchange lost authorization code, redirect or PKCE")
+					}
+					if test.name == "token exchange failure" {
+						status, body = http.StatusBadRequest, `{"error":"invalid_grant"}`
+						break
+					}
+					email := "me@gmail.com"
+					if test.name == "account mismatch" {
+						email = "other@gmail.com"
+					}
+					claims, err := json.Marshal(map[string]any{"email": email, "email_verified": test.name != "unverified account"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					refresh := "new-refresh"
+					if test.name == "missing refresh token" {
+						refresh = ""
+					}
+					data, err := json.Marshal(map[string]any{"access_token": "new-access", "refresh_token": refresh, "token_type": "Bearer", "expires_in": 3600, "id_token": "x." + base64.RawURLEncoding.EncodeToString(claims) + ".y"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = string(data)
+				case "https://gmail.googleapis.com/gmail/v1/users/me/labels":
+					labels++
+					if exchanges != 1 || request.Method != http.MethodGet || request.Body != nil || request.Header.Get("Authorization") != "Bearer new-access" {
+						t.Error("validation must only list labels with the staged OAuth token")
+					}
+					if test.name == "labels check failure" {
+						status, body = http.StatusForbidden, `{"error":{"message":"synthetic labels denied"}}`
+					}
+					if test.name == "new API target labels failure" {
+						status, body = http.StatusForbidden, `{"error":{"message":"synthetic labels denied"}}`
+					}
+					if test.name == "labels timeout" {
+						<-request.Context().Done()
+						return nil, request.Context().Err()
+					}
+				default:
+					t.Errorf("unexpected network request: %s %s", request.Method, request.URL)
+					return nil, errors.New("forbidden request")
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})
+			defer func() { http.DefaultTransport = previous }()
+			output := &setupAuthorizationWriter{testing: t, callback: func(query url.Values) {
+				authorization = query
+				switch test.name {
+				case "concurrent token edit", "concurrent token creation", "new API target token appeared":
+					writeStartupTestFile(t, tokenPath, "concurrent token bytes\n")
+				case "concurrent token whitespace edit":
+					writeStartupTestFile(t, tokenPath, before["/tokens/me@gmail.com.token.json"]+"\n")
+				case "concurrent empty token creation":
+					writeStartupTestFile(t, tokenPath, "")
+				case "concurrent token deletion":
+					if err := os.Remove(tokenPath); err != nil {
+						t.Fatal(err)
+					}
+				case "concurrent YAML edit":
+					path := filepath.Join(dir, "config.yaml")
+					writeStartupTestFile(t, path, before["/config.yaml"]+"# Concurrent YAML edit.\n")
+				case "concurrent dotenv edit":
+					writeStartupTestFile(t, filepath.Join(dir, ".env"), "KEEP=concurrent\n")
+				}
+				before = setupSnapshot(t, dir)
+				setupAuthorizationCallback(t, query, test.name == "authorization denied")
+			}}
+			err := runAdd(args, output)
+			if !output.launched || labels != test.labels {
+				t.Fatalf("authorization launched=%t, labels GET count=%d; want %d", output.launched, labels, test.labels)
+			}
+			wantExchanges := 1
+			if test.name == "authorization denied" {
+				wantExchanges = 0
+			}
+			if exchanges != wantExchanges {
+				t.Errorf("token exchange count=%d; want %d", exchanges, wantExchanges)
+			}
+			if test.want != "" {
+				if err == nil || !strings.Contains(err.Error(), test.want) {
+					t.Errorf("reauthorization error = %v; want %q", err, test.want)
+				}
+				assertSetupSnapshot(t, dir, before)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if newTarget {
+				doc, err := config.OpenDocument(filepath.Join(dir, "config.yaml"), "", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := doc.Config()
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := cfg.Accounts.Targets["me@gmail.com"]
+				route := cfg.Routes["source@example.com"]
+				source := cfg.Accounts.Sources["source@example.com"]
+				if target == nil || target.Method != config.MethodAPI || len(cfg.Accounts.Targets) != 2 || source == nil || source.Server != "127.0.0.1" || source.Password != "synthetic" || len(cfg.Accounts.Sources) != 1 || len(cfg.Routes) != 1 || route == nil || route.Target != "imap@gmail.com" || route.Label == nil || *route.Label != "Original label" || route.InitialSync != "all" || !route.DeleteAfterImport {
+					t.Fatal("new API target changed existing accounts or route")
+				}
+				delete(before, "/config.yaml")
+			}
+			info, err := os.Stat(tokenPath)
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatal("promoted token must have permissions 0600")
+			}
+			store, err := gmailapi.OpenTokenStore(filepath.Dir(tokenPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := store.Load("me@gmail.com")
+			if err != nil || token.AccessToken != "new-access" || token.RefreshToken != "new-refresh" {
+				t.Fatal("reauthorization did not promote the checked token")
+			}
+			after := setupSnapshot(t, dir)
+			if after["/tokens/me@gmail.com.token.json"] == before["/tokens/me@gmail.com.token.json"] {
+				t.Error("reauthorization did not replace token bytes")
+			}
+			delete(before, "/tokens/me@gmail.com.token.json")
+			delete(after, "/tokens/me@gmail.com.token.json")
+			if newTarget {
+				delete(after, "/config.yaml")
+			}
+			if len(after) != len(before) {
+				t.Error("reauthorization created unexpected local files")
+			}
+			for name, data := range before {
+				if after[name] != data {
+					t.Errorf("reauthorization changed %s", name)
+				}
+			}
+		})
+	}
+}
+
+func TestSetupReauthorizeRejectsBeforeNetwork(t *testing.T) {
+	for _, test := range []struct {
+		name, kind, email, want string
+		extra                   []string
+	}{
+		{"source", "source", "source@example.com", "existing API target", nil},
+		{"missing target", "target", "missing@gmail.com", "existing API target", nil},
+		{"IMAP target", "target", "imap@gmail.com", "existing API target", nil},
+		{"non-interactive", "target", "me@gmail.com", "interactive OAuth", []string{"--non-interactive"}},
+		{"non-interactive missing token", "target", "me@gmail.com", "interactive OAuth", []string{"--non-interactive"}},
+		{"method change", "target", "me@gmail.com", "cannot change", []string{"--mode", "imap"}},
+		{"invalid method", "target", "me@gmail.com", "cannot change", []string{"--mode", "invalid"}},
+		{"dry run", "target", "me@gmail.com", "DRY_RUN", nil},
+		{"normal duplicate", "target", "me@gmail.com", "already exists", []string{"--mode", "api", "--non-interactive"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir, args, tokenPath := setupReauthorizationFixture(t)
+			args[0], args[1] = test.kind, test.email
+			if test.name == "non-interactive missing token" {
+				if err := os.Remove(tokenPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "normal duplicate" {
+				args = append(args[:2], args[3:]...)
+			}
+			if test.name == "dry run" {
+				t.Setenv("DRY_RUN", "true")
+			}
+			before := setupSnapshot(t, dir)
+			forbidStartupHTTP(t)
+			output := &setupAuthorizationWriter{testing: t, callback: func(query url.Values) {
+				setupAuthorizationCallback(t, query, true)
+			}}
+			err := runAdd(append(args, test.extra...), output)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Errorf("error = %v; want %q", err, test.want)
+			}
+			if output.launched {
+				t.Error("invalid setup started OAuth")
+			}
+			assertSetupSnapshot(t, dir, before)
+		})
+	}
+}
+
+func TestSetupReauthorizeCancellation(t *testing.T) {
+	const helper = "GMAIL_POPPERS_TEST_REAUTHORIZE_CANCEL"
+	if os.Getenv(helper) != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSetupReauthorizeCancellation$", "-test.count=1")
+		command.Env = append(os.Environ(), helper+"=1")
+		command.Dir = t.TempDir()
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("isolated cancellation test failed: %v\n%s", err, output)
+		}
+		return
+	}
+	dir, args, _ := setupReauthorizationFixture(t)
+	before := setupSnapshot(t, dir)
+	forbidStartupHTTP(t)
+	output := &setupAuthorizationWriter{testing: t, callback: func(url.Values) {
+		process, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := process.Signal(os.Interrupt); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	err := runAdd(args, output)
+	if !output.launched || !errors.Is(err, context.Canceled) {
+		t.Errorf("interrupted reauthorization error = %v; want context cancellation", err)
+	}
+	assertSetupSnapshot(t, dir, before)
+}
+
 func TestSetupAddAPITargetNonInteractive(t *testing.T) {
 	for _, scenario := range []string{"existing token", "dotenv client", "missing token", "failed authentication"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -422,7 +799,7 @@ func TestSetupAddAPITargetNonInteractive(t *testing.T) {
 			if scenario == "missing token" || scenario == "failed authentication" {
 				want := "connection check failed"
 				if scenario == "missing token" {
-					want = "existing token"
+					want = "run add target interactively first"
 				}
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Fatalf("error = %v; want %q", err, want)

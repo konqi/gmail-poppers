@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,37 @@ import (
 
 	"golang.org/x/oauth2"
 )
+
+func TestMainRejectsUnknownCommand(t *testing.T) {
+	const helper = "GMAIL_POPPERS_TEST_UNKNOWN_COMMAND"
+	if command := os.Getenv(helper); command != "" {
+		os.Args = []string{"gmail-poppers", command, "--account", "me@gmail.com"}
+		main()
+		t.Fatal("unknown command returned without exiting")
+	}
+	for _, name := range []string{"auth", "unknown", "--unknown"} {
+		t.Run(name, func(t *testing.T) {
+			dir := startupTestEnvironment(t)
+			before := startupFileSnapshot(t, dir)
+			t.Setenv("ENV_FILE", "must-not-be-read.env")
+			t.Setenv("DRY_RUN", "invalid")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainRejectsUnknownCommand$", "-test.count=1")
+			command.Env = append(os.Environ(), helper+"="+name)
+			command.Dir = dir
+			output, err := command.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("command %q exit = %v; want status 1", name, err)
+			}
+			if !strings.HasPrefix(string(output), "Usage: gmail-poppers ") || strings.Contains(string(output), "auth --account") || strings.Contains(string(output), "ENV_FILE:") || strings.Contains(string(output), "service has not started") {
+				t.Fatalf("command %q did not use generic unknown-command handling: %s", name, output)
+			}
+			assertStartupFilesUnchanged(t, dir, before)
+		})
+	}
+}
 
 func TestAuthorizeLocal(t *testing.T) {
 	for _, accountMatches := range []bool{true, false} {
@@ -99,17 +132,6 @@ func TestAuthorizeLocalCancellationAndDenial(t *testing.T) {
 		cancel()
 		if err == nil || store.Exists("me@gmail.com") {
 			t.Fatal("cancelled or denied authorization must not store a token")
-		}
-	}
-}
-
-func TestAuthArguments(t *testing.T) {
-	if err := runAuth([]string{"--help"}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{nil, {"--account", "../x@gmail.com"}, {"--account", "me@gmail.com", "extra"}} {
-		if err := runAuth(args, io.Discard); err == nil {
-			t.Errorf("accepted invalid arguments: %v", args)
 		}
 	}
 }

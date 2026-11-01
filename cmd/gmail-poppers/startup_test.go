@@ -58,11 +58,11 @@ func TestStartupInstructions(t *testing.T) {
 		name, data string
 		wants      []string
 	}{
-		{"missing config", "", []string{"add target", "add source", "link", "auth --account"}},
+		{"missing config", "", []string{"add target", "add source", "link", "--reauthorize"}},
 		{"missing source", "accounts: {targets: {me@gmail.com: {method: imap, app_password: synthetic}}}", []string{"add source", "link", "me@gmail.com"}},
 		{"missing target", "accounts: {sources: {source@example.com: {type: pop3, server: localhost, user: user, password: synthetic}}}", []string{"add target", "link", "source@example.com"}},
 		{"missing route", "accounts: {targets: {me@gmail.com: {}}, sources: {source@example.com: {type: pop3, server: localhost, user: user, password: synthetic}}}", []string{"link", "source@example.com", "me@gmail.com"}},
-		{"missing oauth", "accounts: {targets: {me@gmail.com: {}}, sources: {source@example.com: {type: pop3, server: localhost, user: user, password: synthetic}}}\nroutes: {source@example.com: {target: me@gmail.com}}", []string{"Google OAuth client", "auth --account", "me@gmail.com"}},
+		{"missing oauth", "accounts: {targets: {me@gmail.com: {}}, sources: {source@example.com: {type: pop3, server: localhost, user: user, password: synthetic}}}\nroutes: {source@example.com: {target: me@gmail.com}}", []string{"Google OAuth client", "add target \"me@gmail.com\" --reauthorize", "me@gmail.com"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -179,11 +179,11 @@ func TestStartupIncompleteHints(t *testing.T) {
 		name, data       string
 		wants, forbidden []string
 	}{
-		{"empty YAML", "", []string{"add target", "add source", "link", "For an API target", "auth --account"}, []string{"No configuration found"}},
-		{"empty config", "{}", []string{"add target", "add source", "link", "auth --account"}, []string{"No configuration found"}},
-		{"only IMAP target", "accounts: {targets: {me@gmail.com: {method: imap, app_password: synthetic}}}", []string{"add source", "link"}, []string{"add target", "auth --account", "Google Desktop"}},
+		{"empty YAML", "", []string{"add target", "add source", "link", "For an API target", "--reauthorize"}, []string{"No configuration found"}},
+		{"empty config", "{}", []string{"add target", "add source", "link", "--reauthorize"}, []string{"No configuration found"}},
+		{"only IMAP target", "accounts: {targets: {me@gmail.com: {method: imap, app_password: synthetic}}}", []string{"add source", "link"}, []string{"add target", "--reauthorize", "Google Desktop"}},
 		{"only source", "accounts: {sources: {source@example.com: {type: pop3, server: localhost, user: user, password: synthetic}}}", []string{"add target", "link"}, []string{"add source"}},
-		{"only route missing", "accounts: {targets: {me@gmail.com: {method: imap, app_password: synthetic}}, sources: {source@example.com: {type: pop3, server: localhost, user: user, password: synthetic}}}", []string{"link", "source@example.com", "me@gmail.com"}, []string{"add target", "add source", "auth --account"}},
+		{"only route missing", "accounts: {targets: {me@gmail.com: {method: imap, app_password: synthetic}}, sources: {source@example.com: {type: pop3, server: localhost, user: user, password: synthetic}}}", []string{"link", "source@example.com", "me@gmail.com"}, []string{"add target", "add source", "--reauthorize"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := startupTestEnvironment(t)
@@ -253,9 +253,9 @@ routes: {%s}
 					t.Fatalf("expected runnable configuration: %v", err)
 				}
 			} else {
-				wants := []string{"auth --account", "--config " + strconv.Quote(os.Getenv("CONFIG_PATH")), "--token-dir " + strconv.Quote(tokenDir)}
+				wants := []string{"--reauthorize", "--config " + strconv.Quote(os.Getenv("CONFIG_PATH")), "--client-secret " + strconv.Quote(filepath.Join(dir, "client_secret.json")), "--token-dir " + strconv.Quote(tokenDir)}
 				for _, email := range test.missing {
-					wants = append(wants, "auth --account "+strconv.Quote(email))
+					wants = append(wants, "gmail-poppers add target "+strconv.Quote(email)+" --reauthorize --config "+strconv.Quote(os.Getenv("CONFIG_PATH"))+" --client-secret "+strconv.Quote(filepath.Join(dir, "client_secret.json"))+" --token-dir "+strconv.Quote(tokenDir))
 				}
 				forbidden := []string{"synthetic-access-secret", "synthetic-refresh-secret", "synthetic-client-secret", "Google Cloud setup"}
 				forbidden = append(forbidden, test.ready...)
@@ -285,7 +285,7 @@ routes: {source@example.com: {target: me@gmail.com}}`)
 			}
 			before := startupFileSnapshot(t, dir)
 			_, _, err := startupConfig()
-			requireStartupGuidance(t, err, []string{"Google OAuth client is missing or invalid", "Desktop app", "enable Gmail API", "https://console.cloud.google.com/auth/clients", filepath.Join(dir, "client_secret.json"), "auth --account \"me@gmail.com\""}, []string{"synthetic-client-secret", "synthetic"})
+			requireStartupGuidance(t, err, []string{"Google OAuth client is missing or invalid", "Desktop app", "enable Gmail API", "https://console.cloud.google.com/auth/clients", filepath.Join(dir, "client_secret.json"), "add target \"me@gmail.com\" --reauthorize"}, []string{"synthetic-client-secret", "synthetic"})
 			assertStartupFilesUnchanged(t, dir, before)
 		})
 	}
@@ -326,7 +326,7 @@ func TestStartupPaths(t *testing.T) {
 			t.Setenv("GOOGLE_CLIENT_SECRET_FILE", test.client)
 			before := startupFileSnapshot(t, dir)
 			cfg, options, err := startupConfig()
-			requireStartupGuidance(t, err, []string{"No configuration found at " + test.wantConfig, "add target", "add source", "link", "auth --account"}, nil)
+			requireStartupGuidance(t, err, []string{"No configuration found at " + test.wantConfig, "add target", "add source", "link", "--reauthorize"}, nil)
 			if cfg != nil || options == nil {
 				t.Fatalf("unexpected startup results: config present=%t, options present=%t", cfg != nil, options != nil)
 			}
@@ -387,7 +387,7 @@ func TestStartupMissingDotenvVariables(t *testing.T) {
 	writeStartupTestFile(t, os.Getenv("CONFIG_PATH"), `accounts: {targets: {me@gmail.com: {method: imap, app_password: "${GMAIL_POPPERS_STARTUP_TEST_UNDEFINED_PASSWORD}"}}}`)
 	before := startupFileSnapshot(t, dir)
 	_, _, err := startupConfig()
-	requireStartupGuidance(t, err, []string{variable, "ENV_FILE=" + strconv.Quote(filepath.Join(dir, ".env")), "Portainer", "service has not started"}, []string{"No configuration found", "add target", "auth --account"})
+	requireStartupGuidance(t, err, []string{variable, "ENV_FILE=" + strconv.Quote(filepath.Join(dir, ".env")), "Portainer", "service has not started"}, []string{"No configuration found", "add target", "--reauthorize"})
 	assertStartupFilesUnchanged(t, dir, before)
 }
 

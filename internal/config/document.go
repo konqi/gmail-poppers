@@ -146,6 +146,13 @@ func (d *Document) Password(kind, email, value, storage string) (string, error) 
 	return "${" + name + "}", nil
 }
 
+func (d *Document) Unchanged() error {
+	if err := unchanged(d.path, d.original); err != nil {
+		return err
+	}
+	return unchanged(d.envPath, d.originalEnv)
+}
+
 func (d *Document) Save() error {
 	if _, err := d.Config(); err != nil {
 		return err

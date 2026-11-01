@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -209,6 +210,7 @@ func runAdd(args []string, output io.Writer) error {
 	checkTimeout := flags.Duration("check-timeout", 30*time.Second, "Read-only validation timeout")
 	nonInteractive := flags.Bool("non-interactive", false, "Never prompt; fail when required information is missing; OAuth token must already exist")
 	noBrowser := flags.Bool("no-browser", false, "Print OAuth URL without opening a browser")
+	reauthorize := flags.Bool("reauthorize", false, "Renew OAuth for an existing API target without changing configuration")
 	if err := parseLocal(flags, args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -230,11 +232,27 @@ func runAdd(args []string, output io.Writer) error {
 		return err
 	}
 	prompt := &setupPrompt{reader: bufio.NewReader(os.Stdin), output: output, nonInteractive: *nonInteractive}
+	current, err := doc.Config()
+	if err != nil {
+		return err
+	}
+	if *reauthorize {
+		if kind != "target" || current.Accounts.Targets[email] == nil || current.Accounts.Targets[email].Method != config.MethodAPI {
+			return errors.New("add: --reauthorize requires an existing API target")
+		}
+		if *nonInteractive {
+			return errors.New("add: --reauthorize requires interactive OAuth")
+		}
+		if *mode != "" && *mode != config.MethodAPI {
+			return errors.New("add: --reauthorize cannot change the target method")
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var check func(context.Context) error
 	var pendingToken []byte
+	var originalToken []byte
 	if kind == "source" {
 		if *sourceType != "" && *mode != "" && *sourceType != *mode {
 			return errors.New("add: --mode and --type disagree")
@@ -291,7 +309,11 @@ func runAdd(args []string, output io.Writer) error {
 			check = imapsrc.New(source, log).Check
 		}
 	} else {
-		method, err := prompt.choice("mode", *mode, "Gmail method (api/imap)", "api", "api", "imap")
+		selectedMode := *mode
+		if *reauthorize {
+			selectedMode = config.MethodAPI
+		}
+		method, err := prompt.choice("mode", selectedMode, "Gmail method (api/imap)", "api", "api", "imap")
 		if err != nil {
 			return err
 		}
@@ -314,8 +336,10 @@ func runAdd(args []string, output io.Writer) error {
 			}
 			definition["app_password"] = stored
 		}
-		if err := doc.AddAccount("targets", email, definition); err != nil {
-			return err
+		if !*reauthorize {
+			if err := doc.AddAccount("targets", email, definition); err != nil {
+				return err
+			}
 		}
 		cfg, err := doc.Config()
 		if err != nil {
@@ -336,9 +360,15 @@ func runAdd(args []string, output io.Writer) error {
 				return err
 			}
 			store, storeErr := gmailapi.OpenTokenStore(options.tokenDir)
-			if storeErr != nil || !store.Exists(email) {
+			if *reauthorize || storeErr != nil || !store.Exists(email) {
 				if *nonInteractive {
-					return errors.New("add: non-interactive OAuth requires an existing token; run auth first")
+					return errors.New("add: non-interactive OAuth requires an existing token; run add target interactively first")
+				}
+				if *reauthorize {
+					originalToken, err = os.ReadFile(filepath.Join(options.tokenDir, strings.ToLower(email)+".token.json"))
+					if err != nil && !errors.Is(err, os.ErrNotExist) {
+						return err
+					}
 				}
 				temporary, err := os.MkdirTemp("", "gmail-poppers-auth-*")
 				if err != nil {
@@ -380,12 +410,27 @@ func runAdd(args []string, output io.Writer) error {
 	}
 	if len(pendingToken) > 0 {
 		path := filepath.Join(options.tokenDir, strings.ToLower(email)+".token.json")
-		if _, err := os.Stat(path); err == nil {
+		if *reauthorize {
+			if err := doc.Unchanged(); err != nil {
+				return err
+			}
+			currentToken, err := os.ReadFile(path)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if !bytes.Equal(currentToken, originalToken) || (currentToken == nil) != (originalToken == nil) {
+				return errors.New("add: token file changed during authorization; refusing to overwrite")
+			}
+		} else if _, err := os.Stat(path); err == nil {
 			return errors.New("add: token file appeared during setup; refusing to overwrite")
 		}
 		if err := config.WritePrivate(path, pendingToken); err != nil {
 			return err
 		}
+	}
+	if *reauthorize {
+		fmt.Fprintf(output, "Reauthorized target %s. Configuration and routes are unchanged; restart the service after installing the token.\n", email)
+		return nil
 	}
 	if err := doc.Save(); err != nil {
 		return fmt.Errorf("add: local save failed (a token or env-file may already have been saved): %w", err)

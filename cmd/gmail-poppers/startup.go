@@ -75,7 +75,7 @@ func startupConfig() (*config.Config, *localOptions, error) {
 }
 
 func authInstruction(email string, options *localOptions) string {
-	return "  gmail-poppers auth --account " + strconv.Quote(email) + " --config " + strconv.Quote(options.configPath) +
+	return "  gmail-poppers add target " + strconv.Quote(email) + " --reauthorize --config " + strconv.Quote(options.configPath) +
 		" --client-secret " + strconv.Quote(options.clientFile) + " --token-dir " + strconv.Quote(options.tokenDir)
 }
 

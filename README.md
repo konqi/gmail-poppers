@@ -75,7 +75,8 @@ For every source, gmail-poppers runs this loop:
 
 Calling the binary without arguments starts the service when setup is complete.
 If configuration, targets, sources, routes or required API authorization are
-missing, it prints the corresponding `add`, `link` or `auth` commands and exits
+missing, it prints the corresponding `add` or `link` commands (including
+`add target <email> --reauthorize` for an existing API target) and exits
 with code 1. The readiness check does not create files, open a status listener,
 or contact mail servers. Invalid YAML is reported as a configuration error.
 
@@ -85,8 +86,7 @@ never put a real password into the example command.
 
 ```sh
 go build -o gmail-poppers ./cmd/gmail-poppers
-./gmail-poppers auth --account mymail@gmail.com
-./gmail-poppers add target mymail@gmail.com --non-interactive
+./gmail-poppers add target mymail@gmail.com --mode api
 ./gmail-poppers add source me@example.com --type pop3 --server pop.example.com --password-env MY_PASS --non-interactive
 ./gmail-poppers link me@example.com mymail@gmail.com --non-interactive
 ```
@@ -97,7 +97,7 @@ or YAML. Local service defaults are `./config.yaml`, `./data`, and `./tokens`;
 the Docker image sets `/config/config.yaml` and `/data` instead. If `DATA_DIR`
 is explicitly set, the service defaults token storage to `${DATA_DIR}/tokens`.
 
-`auth`, `add`, `link` and `test` default to `./config.yaml`,
+`add`, `link` and `test` default to `./config.yaml`,
 `./client_secret.json` and `./tokens`. `--config`, `--client-secret` and
 `--token-dir` override them; `CONFIG_PATH`, `GOOGLE_CLIENT_SECRET_FILE` and
 `TOKEN_DIR` can also supply those paths. Flags may appear before or after
@@ -110,10 +110,19 @@ The option is named `--client-secret`, while the default input file is
 tokens are saved separately in the token directory.
 
 Without `--non-interactive`, `add` prompts for missing information. An API
-target uses `--mode api` (default); interactive setup authorizes it if needed,
-stages the token, checks access, then saves locally. Non-interactive API setup
-requires an existing token from `auth`. For an IMAP target, use `--mode imap`
-and supply its app password.
+target defaults to `api`, but omitting `--mode` prompts for the method during
+interactive setup; `--mode api` skips that prompt. Adding a new API target
+authorizes OAuth only if no token file exists. It stages any new token in a
+temporary directory, checks Gmail label access, then promotes the token and
+saves YAML. Non-interactive setup never prompts or opens a browser; API targets
+require an existing token from prior interactive setup or securely copied local
+tokens. For an IMAP target, use `--mode imap` and supply its app password.
+
+An existing target ID is rejected, even if its OAuth token is missing, unless
+you use `add target <email> --reauthorize`. This option requires an existing
+API target and interactive OAuth; it renews authorization even when a token
+exists and cannot be combined with `--non-interactive`. It does not edit YAML,
+routes, sources or dotenv. See [Renew authorization](#renew-authorization).
 
 For sources, `--type pop3|imap` selects the protocol (`--mode` is an alias).
 Settings are `--server`, `--port` (default auto), `--tls` (default `auto`),
@@ -137,7 +146,7 @@ access. Options are `--label` (`--label=""` disables the extra label),
 With `--non-interactive`, omitted options use defaults for a new route or
 retain existing options. Linking an already routed source to another target
 is rejected. Each source has one target per instance; many sources can share
-a target. `DRY_RUN=true` refuses setup writes, including `auth` and `link`.
+a target. `DRY_RUN=true` refuses setup writes, including token renewal and `link`.
 
 ### Dotenv and Portainer
 
@@ -154,9 +163,8 @@ volumes:
 ```
 
 This is an addition to the example stack, which stays in push mode without a
-published host port. Remove its sample `TELEKOM_PASSWORD` and `GMX_PASSWORD`
-entries unless your YAML actually references them. Alternatively, enter the
-decoded variable values manually in Portainer and omit `ENV_FILE`.
+published host port. Alternatively, enter the decoded values for variables
+referenced by your YAML manually in Portainer and omit `ENV_FILE`.
 
 `ENV_FILE` uses the same dotenv parser as the CLI; process environment values
 win. Generated values are **JSON-quoted**, preserving dollar signs and escape
@@ -221,7 +229,7 @@ Instead of the file, you can set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 ## Authorizing Gmail accounts
 
 The same binary runs the service without arguments and authorizes accounts
-with `gmail-poppers auth`. Run authorization once per Gmail target using
+with `gmail-poppers add target <email> --mode api`. Add each Gmail target using
 the **Desktop app** client created above.
 
 ### Authorize locally
@@ -232,18 +240,35 @@ container. Build the binary locally with Go (on Windows, use
 
 ```sh
 go build -o gmail-poppers ./cmd/gmail-poppers
-./gmail-poppers auth --account private@gmail.com --client-secret ./client_secret.json --token-dir ./tokens
-./gmail-poppers auth --account second@gmail.com --client-secret ./client_secret.json --token-dir ./tokens
+./gmail-poppers add target private@gmail.com --mode api --client-secret ./client_secret.json --token-dir ./tokens
+./gmail-poppers add target second@gmail.com --mode api --client-secret ./client_secret.json --token-dir ./tokens
 ```
 
-For each command, the browser opens Google sign-in. Sign in as the requested
-account and grant access. The CLI receives the callback on a temporary port
-bound only to `127.0.0.1`, checks that the signed-in account matches `--account`,
-and saves `tokens/<gmail>.token.json` with mode 0600. If the browser does not open, open the printed
-URL manually **on the same computer**. The flow uses PKCE and validates callback
-state. `--no-browser` disables automatic browser
-launch; `auth --help` lists the options. Authorization times out after five
-minutes and can be cancelled with Ctrl+C.
+When no token file exists, the browser opens Google sign-in. Sign in as the
+target email and grant access. The CLI receives the callback on a temporary
+port bound only to `127.0.0.1` and checks that the signed-in account matches
+the target email. It checks label access with the staged token before saving
+`tokens/<gmail>.token.json` with mode 0600 and adding the target to YAML.
+If the browser does not open, open the printed URL manually **on the same
+computer**. The flow uses PKCE and validates callback state. `--no-browser`
+disables automatic browser launch; `add target --help` lists the options.
+Authorization times out after five minutes and can be cancelled with Ctrl+C.
+
+### Renew authorization
+
+For an existing API target whose token is missing, expired or revoked, run:
+
+```sh
+./gmail-poppers add target private@gmail.com --reauthorize --client-secret ./client_secret.json --token-dir ./tokens
+```
+
+Use the same local config containing that target, or select it with `--config`.
+This always runs interactive OAuth, even if a token exists. The new token is
+staged and label access is checked before replacing the old token; concurrent
+changes to configuration, dotenv or the token file cause replacement to be
+refused. YAML, routes, sources and dotenv remain unchanged. Stop the service
+before installing a renewed token; if renewing directly in its token directory,
+stop it before running this command. Restart it after installation.
 
 ### Install tokens on the RPi
 
@@ -280,12 +305,9 @@ volumes:
 
 Mount the same OAuth client JSON read-only under `/config`. The service uses it
 to refresh tokens, so the token mount must be **writable**. Add each Gmail address
-under `accounts.targets` with `method: api` and link its sources under `routes`,
-then start or redeploy the container.
+with the local CLI and link its sources under `routes`; transfer the resulting
+YAML along with the tokens, then start or redeploy the container.
 Keep tokens in their files rather than pasting them into the YAML.
-
-To re-authorize later, repeat the CLI flow, replace that account's token file
-while the service is stopped, and restart it.
 
 ## Connection checks
 
@@ -313,8 +335,10 @@ Each check authenticates and performs a read-only operation:
 No message bodies are downloaded, imported, flagged or deleted. Checks do not
 start polling, report to Gatus, or create/update state and token files. Gmail
 API may refresh an expired access token through Google's OAuth endpoint, but
-the refreshed token is used only in memory. Authorize the account with `auth`
-first if no token is available.
+the refreshed token is used only in memory. If no token is available, use
+interactive `add target <email> --mode api` for a new target, or
+`add target <email> --reauthorize` for an existing API target, then install
+the token before checking.
 
 `--timeout` defaults to `30s`; `test --help` lists all options. Configuration
 and OAuth client/token paths can also come from the service environment variables.
@@ -589,8 +613,8 @@ unencrypted connection unless you explicitly set `tls: none`.
 
 | Error | What to do |
 |---|---|
-| `gmail api: account not authorized yet` | Run `gmail-poppers auth`, install the token file, and restart the service |
-| `gmail api: authorization expired or revoked` | Re-authorize with the CLI and replace the token file. Make sure the OAuth app is **In production**. |
+| `gmail api: account not authorized yet` | For an existing API target, run `gmail-poppers add target <email> --reauthorize` locally; stop the service, install the token file, then restart it |
+| `gmail api: authorization expired or revoked` | Run `gmail-poppers add target <email> --reauthorize` locally and replace the token while the service is stopped. Make sure the OAuth app is **In production**. |
 | `gmail api: no OAuth client configured` | Set `GOOGLE_CLIENT_SECRET_FILE` and mount the file |
 | `gmail imap login (check the app password)` | Create a new app password for the Gmail account |
 | `pop3 login: server: …` / `imap login: …` | Wrong user or password, or POP3/IMAP access is disabled at the provider |

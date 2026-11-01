@@ -53,15 +53,12 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "auth" {
-		if err := runAuth(os.Args[2:], os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
+	}
+	if len(os.Args) > 1 {
+		fmt.Fprintln(os.Stderr, "Usage: gmail-poppers [add target|source <email> | link <source> <target> | test --mode source|target <email> | healthcheck]")
+		os.Exit(1)
 	}
 	log := newLogger(env("LOG_LEVEL", "info"))
 	if err := run(log); err != nil {

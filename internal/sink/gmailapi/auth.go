@@ -22,7 +22,7 @@ var Scopes = []string{
 	"email",
 }
 
-var ErrNotAuthorized = errors.New("account not authorized yet, run gmail-poppers auth and install the token file")
+var ErrNotAuthorized = errors.New("account not authorized yet, run gmail-poppers add target with --reauthorize and install the token file")
 
 var googleEndpoint = oauth2.Endpoint{
 	AuthURL:   "https://accounts.google.com/o/oauth2/auth",

@@ -21,8 +21,12 @@ from the project's design discussions. Do not revive superseded plans.
   delivery across Gmail and local state files.
 - Keep Gmail API import as the default and IMAP APPEND as an alternative. Preserve
   the README warning about IMAP APPEND bypassing Gmail spam scanning.
-- Use one binary: no arguments runs the service, `auth` performs local OAuth,
-  and `test` checks a configured source or target connection.
+- Use one binary: no arguments runs the service; `add target` performs local
+  OAuth and target setup, `add source` defines source connections, `link` creates
+  routes, and `test` checks a configured source or target connection.
+- Renew existing API target authorization with `add target --reauthorize`,
+  preserving configuration and routes. Non-interactive setup must never launch
+  OAuth or prompt; it requires existing tokens for API targets.
 - OAuth authorization is CLI-only, on the user's browser computer. Preserve the
   temporary loopback callback, PKCE, state validation, and Gmail account matching.
   Store per-account tokens separately from YAML; support TOKEN_DIR and automatic

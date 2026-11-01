@@ -284,7 +284,7 @@ func parseError(resp *http.Response) error {
 func describe(err error) error {
 	var re *oauth2.RetrieveError
 	if errors.As(err, &re) && re.ErrorCode == "invalid_grant" {
-		return errors.New("gmail api: authorization expired or revoked, re-authorize with gmail-poppers auth (is the OAuth app published \"In production\"?)")
+		return errors.New("gmail api: authorization expired or revoked, re-authorize with gmail-poppers add target --reauthorize (is the OAuth app published \"In production\"?)")
 	}
 	return fmt.Errorf("gmail api: %w", err)
 }
