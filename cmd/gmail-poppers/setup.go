@@ -194,7 +194,10 @@ func runAdd(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("add "+kind, flag.ContinueOnError)
 	flags.SetOutput(output)
 	options := localFlags(flags)
-	mode := flags.String("mode", "", "Target method api|imap or source protocol pop3|imap")
+	mode := new(string)
+	if kind == "target" {
+		flags.StringVar(mode, "mode", "", "Target method api|imap")
+	}
 	sourceType := flags.String("type", "", "Source protocol pop3|imap")
 	server := flags.String("server", "", "Source server hostname")
 	port := flags.Int("port", 0, "Source port (0: auto)")
@@ -254,14 +257,7 @@ func runAdd(args []string, output io.Writer) error {
 	var pendingToken []byte
 	var originalToken []byte
 	if kind == "source" {
-		if *sourceType != "" && *mode != "" && *sourceType != *mode {
-			return errors.New("add: --mode and --type disagree")
-		}
-		protocol := *sourceType
-		if protocol == "" {
-			protocol = *mode
-		}
-		protocol, err = prompt.choice("type", protocol, "Source protocol (pop3/imap)", "", "pop3", "imap")
+		protocol, err := prompt.choice("type", *sourceType, "Source protocol (pop3/imap)", "", "pop3", "imap")
 		if err != nil {
 			return err
 		}

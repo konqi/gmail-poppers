@@ -124,7 +124,7 @@ API target and interactive OAuth; it renews authorization even when a token
 exists and cannot be combined with `--non-interactive`. It does not edit YAML,
 routes, sources or dotenv. See [Renew authorization](#renew-authorization).
 
-For sources, `--type pop3|imap` selects the protocol (`--mode` is an alias).
+For sources, `--type pop3|imap` selects the protocol.
 Settings are `--server`, `--port` (default auto), `--tls` (default `auto`),
 `--user` (default source email), `--folders` (comma-separated, IMAP only,
 default `INBOX`), `--interval` and `--timeout`. The last two inherit config

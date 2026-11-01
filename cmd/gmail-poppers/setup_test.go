@@ -184,7 +184,7 @@ func TestSetupLocalFlags(t *testing.T) {
 func TestSetupAddSourceThenTest(t *testing.T) {
 	for _, test := range []struct{ name, protocolFlag, storage, passwordFlag string }{
 		{"type env literal", "--type", "env", "--password"},
-		{"mode env variable", "--mode", "env", "--password-env"},
+		{"type env variable", "--type", "env", "--password-env"},
 		{"type yaml file", "--type", "yaml", "--password-file"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -284,7 +284,8 @@ func TestSetupAddRejectsBeforeNetworkOrWrites(t *testing.T) {
 		{"missing flag value", []string{"source", "a@example.com", "--server"}, "missing value"},
 		{"missing type", []string{"source", "a@example.com"}, "--type"},
 		{"invalid type", []string{"source", "a@example.com", "--type", "smtp"}, "invalid --type"},
-		{"aliases disagree", []string{"source", "a@example.com", "--type", "pop3", "--mode", "imap"}, "disagree"},
+		{"unsupported source mode", []string{"source", "a@example.com", "--mode", "imap"}, "flag provided but not defined: -mode"},
+		{"source mode with type", []string{"source", "a@example.com", "--type", "pop3", "--mode", "imap"}, "flag provided but not defined: -mode"},
 		{"missing server", []string{"source", "a@example.com", "--type", "pop3"}, "--server"},
 		{"missing password", []string{"source", "a@example.com", "--type", "pop3", "--server", "127.0.0.1"}, "missing --password"},
 		{"missing env password", []string{"source", "a@example.com", "--type", "pop3", "--server", "127.0.0.1", "--password-env", "SETUP_MISSING_PASSWORD"}, "missing or empty"},
@@ -1047,7 +1048,7 @@ func TestSetupAddIMAPSource(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "config.yaml")
 			before := setupSnapshot(t, dir)
-			args := []string{"source", "local@example.com", "--config", path, "--mode", "imap", "--server", "127.0.0.1", "--port", fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), "--tls", "none", "--password", test.password, "--check-timeout", "1s", "--non-interactive"}
+			args := []string{"source", "local@example.com", "--config", path, "--type", "imap", "--server", "127.0.0.1", "--port", fmt.Sprint(listener.Addr().(*net.TCPAddr).Port), "--tls", "none", "--password", test.password, "--check-timeout", "1s", "--non-interactive"}
 			if test.folders != "" {
 				args = append(args, "--folders", test.folders)
 			}
