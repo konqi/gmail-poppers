@@ -65,6 +65,11 @@ func main() {
 	}
 	log := newLogger(env("LOG_LEVEL", "info"))
 	if err := run(log); err != nil {
+		var setup *setupRequired
+		if errors.As(err, &setup) {
+			fmt.Fprintln(os.Stderr, setup.message)
+			os.Exit(1)
+		}
 		log.Error("fatal", "error", err)
 		os.Exit(1)
 	}
@@ -76,11 +81,11 @@ func run(log *slog.Logger) error {
 			return fmt.Errorf("ENV_FILE: %w", err)
 		}
 	}
-	cfg, err := config.Load(env("CONFIG_PATH", "/config/config.yaml"))
+	cfg, paths, err := startupConfig()
 	if err != nil {
 		return err
 	}
-	dataDir := env("DATA_DIR", "/data")
+	dataDir := env("DATA_DIR", "./data")
 	if err := cfg.ValidateService(); err != nil {
 		return err
 	}
@@ -99,7 +104,7 @@ func run(log *slog.Logger) error {
 		log.Warn("DRY RUN: sources and Gmail are only read, nothing is imported, labeled, deleted or saved")
 	}
 
-	tokens, err := gmailapi.NewTokenStore(env("TOKEN_DIR", filepath.Join(dataDir, "tokens")))
+	tokens, err := gmailapi.NewTokenStore(paths.tokenDir)
 	if err != nil {
 		return err
 	}
@@ -212,14 +217,21 @@ func run(log *slog.Logger) error {
 
 func buildSinks(cfg *config.Config, tokens *gmailapi.TokenStore, log *slog.Logger) map[string]sink.Sink {
 	sinks := map[string]sink.Sink{}
+	used := map[string]bool{}
+	for _, route := range cfg.Routes {
+		used[route.Target] = true
+	}
 
 	var oauthCfg *oauth2.Config
 	needsOAuth := false
 	for _, a := range cfg.Accounts.Targets {
+		if !used[a.Email] {
+			continue
+		}
 		needsOAuth = needsOAuth || a.Method == config.MethodAPI
 	}
 	if needsOAuth {
-		oc, err := gmailapi.LoadOAuthConfig(os.Getenv("GOOGLE_CLIENT_SECRET_FILE"), os.Getenv("GOOGLE_CLIENT_ID"), os.Getenv("GOOGLE_CLIENT_SECRET"))
+		oc, err := gmailapi.LoadOAuthConfig(serviceOAuthPath(env("GOOGLE_CLIENT_SECRET_FILE", filepath.Join(filepath.Dir(env("CONFIG_PATH", "./config.yaml")), "client_secret.json"))), os.Getenv("GOOGLE_CLIENT_ID"), os.Getenv("GOOGLE_CLIENT_SECRET"))
 		if err != nil {
 			log.Error("Gmail API accounts cannot work without an OAuth client", "error", err)
 		} else {
@@ -228,6 +240,9 @@ func buildSinks(cfg *config.Config, tokens *gmailapi.TokenStore, log *slog.Logge
 	}
 
 	for _, a := range cfg.Accounts.Targets {
+		if !used[a.Email] {
+			continue
+		}
 		alog := log.With("account", a.Email)
 		switch {
 		case a.Method == config.MethodIMAP:

@@ -73,6 +73,12 @@ For every source, gmail-poppers runs this loop:
 
 ### Local setup
 
+Calling the binary without arguments starts the service when setup is complete.
+If configuration, targets, sources, routes or required API authorization are
+missing, it prints the corresponding `add`, `link` or `auth` commands and exits
+with code 1. The readiness check does not create files, open a status listener,
+or contact mail servers. Invalid YAML is reported as a configuration error.
+
 Run these commands locally, before enabling service dry run. Set `MY_PASS` in
 your process environment or the local dotenv file to the source password;
 never put a real password into the example command.
@@ -84,6 +90,12 @@ go build -o gmail-poppers ./cmd/gmail-poppers
 ./gmail-poppers add source me@example.com --type pop3 --server pop.example.com --password-env MY_PASS --non-interactive
 ./gmail-poppers link me@example.com mymail@gmail.com --non-interactive
 ```
+
+Then start locally with `ENV_FILE=./.env ./gmail-poppers` when using generated
+dotenv secrets, or `./gmail-poppers` when values are already in the environment
+or YAML. Local service defaults are `./config.yaml`, `./data`, and `./tokens`;
+the Docker image sets `/config/config.yaml` and `/data` instead. If `DATA_DIR`
+is explicitly set, the service defaults token storage to `${DATA_DIR}/tokens`.
 
 `auth`, `add`, `link` and `test` default to `./config.yaml`,
 `./client_secret.json` and `./tokens`. `--config`, `--client-secret` and
@@ -405,10 +417,10 @@ use `$$` for a literal dollar sign in manually written YAML.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CONFIG_PATH` | `/config/config.yaml` | Path to the configuration file |
+| `CONFIG_PATH` | `./config.yaml` (Docker: `/config/config.yaml`) | Path to the configuration file |
 | `ENV_FILE` | unset | Explicit service dotenv path; no automatic dotenv loading |
-| `DATA_DIR` | `/data` | State and OAuth tokens. Mount a volume here. |
-| `TOKEN_DIR` | `${DATA_DIR}/tokens` | Override service token storage. CLI default: `./tokens`. |
+| `DATA_DIR` | `./data` (Docker: `/data`) | Persistent service state directory |
+| `TOKEN_DIR` | `./tokens`; `${DATA_DIR}/tokens` when `DATA_DIR` is set | Override service token storage. Setup CLI default: `./tokens`. |
 | `HTTP_ADDR` | `:8080` | Listen address for read-only status and health endpoints |
 | `DRY_RUN` | `false` | `true`: read only, see [Dry run](#dry-run) |
 | `TARGET_CONCURRENCY` | `1` | Positive maximum concurrent source runs per Gmail target |

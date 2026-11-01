@@ -10,6 +10,7 @@ RUN GOARM="${TARGETVARIANT#v}" CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARC
     && mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian13:nonroot
+ENV CONFIG_PATH=/config/config.yaml DATA_DIR=/data
 COPY --from=build /out/gmail-poppers /usr/local/bin/gmail-poppers
 # Pre-create /data so a fresh named volume is writable by the nonroot user.
 COPY --from=build --chown=65532:65532 /out/data /data
