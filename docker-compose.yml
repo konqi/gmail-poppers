@@ -1,5 +1,8 @@
 # Example stack for Docker Compose / Portainer.
 # Values like ${GATUS_TOKEN} are taken from the stack's environment variables.
+# For CLI setup, copy config.yaml, .env and client_secret.json to the host
+# config directory below; give UID/GID 65532 read access without world access.
+# Keep generated .env separate from Compose's automatic interpolation file.
 services:
   gmail-poppers:
     # Prebuilt image: replace the two lines below with
@@ -14,12 +17,15 @@ services:
       GATUS_URL: http://gatus:8080
       GATUS_TOKEN: ${GATUS_TOKEN}
       GOOGLE_CLIENT_SECRET_FILE: /config/client_secret.json
+      # Optional: uncomment only when the CLI-generated .env is installed.
+      # ENV_FILE: /config/.env
+      # The service parses JSON-quoted values itself; do not use Compose env_file
+      # or source the generated file in a shell. Process environment values win.
+      # Without ENV_FILE, add the exact variables referenced by your YAML here
+      # using decoded values supplied through Portainer's stack environment.
       # Set to "true" to only read from all servers without changing anything.
       DRY_RUN: "false"
       LOG_LEVEL: info
-      # Secrets referenced from config.yaml as ${...}
-      TELEKOM_PASSWORD: ${TELEKOM_PASSWORD}
-      GMX_PASSWORD: ${GMX_PASSWORD}
     volumes:
       - /opt/gmail-poppers/config:/config:ro
       - gmail-poppers-data:/data

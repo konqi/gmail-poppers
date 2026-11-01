@@ -3,6 +3,10 @@ bin
 data
 config
 config.yaml
+config.yaml.lock
+.gmail-poppers-*
+/gmail-poppers
+/gmail-poppers.exe
 client_secret*.json
 *.token.json
 .env

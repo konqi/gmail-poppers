@@ -11,7 +11,7 @@ marked as unread, as if Gmail had fetched it itself.
 > fitted the bill for this setup. If you object to AI-generated software for
 > ethical or any other reasons, you are entirely free not to use it.
 
-- Multiple Gmail accounts, each with any number of POP3/IMAP sources.
+- Multiple Gmail targets, each with any number of POP3/IMAP sources.
 - Runs as a single Docker container, configured with one YAML file.
 - Each source shows up separately in [Gatus](https://github.com/TwiN/gatus),
   including the exact error message when something breaks.
@@ -35,9 +35,9 @@ flowchart LR
 
 For every source, gmail-poppers runs this loop:
 
-1. Connect to the mail server. TLS is detected automatically.
+1. Wait for a slot on the Gmail target, then connect to the mail server. TLS is detected automatically.
 2. List all messages and skip those it has already handled. It remembers them in `/data/state`.
-3. Insert each new message into Gmail with the labels **INBOX** and **UNREAD**, plus an optional label such as `telekom`.
+3. Insert each new message into Gmail with the labels **INBOX** and **UNREAD**, plus an optional label (the source email by default).
 4. Optionally delete the message on the source server.
 5. Report the result to Gatus and the read-only JSON status endpoints.
 
@@ -53,21 +53,101 @@ For every source, gmail-poppers runs this loop:
 | Duplicates | Detected by UID/UIDL and Message-ID |
 | Monitoring | Gatus push (external endpoints), pull (HTTP status endpoints), or both |
 | Dry run | `DRY_RUN=true` connects and authenticates everywhere but only reads |
-| Secrets | `${VAR}` references in the config, resolved from environment variables |
+| Secrets | `${VAR}` references resolved from environment variables or an explicitly loaded dotenv file |
 
 ## Quick start
 
-1. Create a directory on the Docker host, e.g. `/opt/gmail-poppers/config`.
-2. Copy [config.example.yaml](config.example.yaml) to `/opt/gmail-poppers/config/config.yaml` and adjust it.
-3. If you use `method: api`, follow [Google Cloud setup](#google-cloud-setup-method-api) and save the
-   client file as `/opt/gmail-poppers/config/client_secret.json`.
-4. Authorize every Gmail account that uses `method: api` with the CLI and install
-   the token files. See [Authorizing Gmail accounts](#authorizing-gmail-accounts).
-5. Deploy [docker-compose.yml](docker-compose.yml) as a Portainer stack. Set the
-   referenced variables, such as `GATUS_TOKEN` and mailbox passwords, in the
-   stack's environment variables.
+1. On your browser computer, build the CLI and follow [Google Cloud setup](#google-cloud-setup-method-api)
+  for API targets. Keep the client JSON as `./client_secret.json`.
+2. Use [Local setup](#local-setup) to authorize targets, add sources and link them.
+3. Transfer the generated YAML, dotenv and client JSON securely into
+  `/opt/gmail-poppers/config` on the Docker host. Install tokens as described
+  in [Authorizing Gmail accounts](#authorizing-gmail-accounts).
+4. Give the container's UID/GID 65532 read access to that private config directory
+  and its files; do not make secrets world-readable.
+5. Deploy [docker-compose.yml](docker-compose.yml) as a Portainer stack, using
+  the [dotenv settings below](#dotenv-and-portainer). Set `GATUS_TOKEN` in
+  Portainer and keep the persistent `/data` volume.
 6. Start with `DRY_RUN: "true"` and check the container logs or Gatus.
 7. When every source reports success, set `DRY_RUN: "false"` and redeploy.
+
+### Local setup
+
+Run these commands locally, before enabling service dry run. Set `MY_PASS` in
+your process environment or the local dotenv file to the source password;
+never put a real password into the example command.
+
+```sh
+go build -o gmail-poppers ./cmd/gmail-poppers
+./gmail-poppers auth --account mymail@gmail.com
+./gmail-poppers add target mymail@gmail.com --non-interactive
+./gmail-poppers add source me@example.com --type pop3 --server pop.example.com --password-env MY_PASS --non-interactive
+./gmail-poppers link me@example.com mymail@gmail.com --non-interactive
+```
+
+`auth`, `add`, `link` and `test` default to `./config.yaml`,
+`./client_secret.json` and `./tokens`. `--config`, `--client-secret` and
+`--token-dir` override them; `CONFIG_PATH`, `GOOGLE_CLIENT_SECRET_FILE` and
+`TOKEN_DIR` can also supply those paths. Flags may appear before or after
+positional arguments. The dotenv default is `.env` beside the config;
+an explicit `--env-file` path must already exist. Process environment values
+override dotenv values.
+
+Without `--non-interactive`, `add` prompts for missing information. An API
+target uses `--mode api` (default); interactive setup authorizes it if needed,
+stages the token, checks access, then saves locally. Non-interactive API setup
+requires an existing token from `auth`. For an IMAP target, use `--mode imap`
+and supply its app password.
+
+For sources, `--type pop3|imap` selects the protocol (`--mode` is an alias).
+Settings are `--server`, `--port` (default auto), `--tls` (default `auto`),
+`--user` (default source email), `--folders` (comma-separated, IMAP only,
+default `INBOX`), `--interval` and `--timeout`. The last two inherit config
+defaults, otherwise `5m` and `10m`. `--check-timeout` defaults to `30s`.
+`--non-interactive` never prompts: defaults are permitted, but missing source
+type, server or password fails before connecting.
+
+Choose exactly one of `--password-env`, `--password-file` or `--password`;
+prefer the first two to avoid exposing secrets in command history or process
+arguments. `--secret-storage env` (default) writes a generated password variable
+to dotenv and a `${VAR}` reference to YAML; `--secret-storage yaml` stores the
+password in YAML. Generated YAML and dotenv files have mode 0600. `add` saves
+only after a read-only server check; OAuth consent changes authorization
+metadata and local tokens, not mailbox contents.
+
+`link <source-email> <target-email>` only changes local YAML, without network
+access. Options are `--label` (`--label=""` disables the extra label),
+`--initial-sync new_only|all` and `--delete-after-import=true|false`.
+With `--non-interactive`, omitted options use defaults for a new route or
+retain existing options. Linking an already routed source to another target
+is rejected. Each source has one target per instance; many sources can share
+a target. `DRY_RUN=true` refuses setup writes, including `auth` and `link`.
+
+### Dotenv and Portainer
+
+The service does **not** automatically load the CLI's local dotenv file.
+Mount the entire config directory read-only (including `.env`) and add:
+
+```yaml
+environment:
+  ENV_FILE: /config/.env
+  GOOGLE_CLIENT_SECRET_FILE: /config/client_secret.json
+volumes:
+  - /opt/gmail-poppers/config:/config:ro
+  - gmail-poppers-data:/data
+```
+
+This is an addition to the example stack, which stays in push mode without a
+published host port. Remove its sample `TELEKOM_PASSWORD` and `GMX_PASSWORD`
+entries unless your YAML actually references them. Alternatively, enter the
+decoded variable values manually in Portainer and omit `ENV_FILE`.
+
+`ENV_FILE` uses the same dotenv parser as the CLI; process environment values
+win. Generated values are **JSON-quoted**, preserving dollar signs and escape
+sequences. **Do not source this file in a shell or pass it directly as Compose
+`env_file`**: complex values, especially those containing `$`, can be changed
+by different parsing or interpolation rules. Keep generated `.env` separate
+from Compose's automatic interpolation file.
 
 ### Docker image
 
@@ -125,7 +205,7 @@ Instead of the file, you can set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 ## Authorizing Gmail accounts
 
 The same binary runs the service without arguments and authorizes accounts
-with `gmail-poppers auth`. Run authorization once per Gmail account using
+with `gmail-poppers auth`. Run authorization once per Gmail target using
 the **Desktop app** client created above.
 
 ### Authorize locally
@@ -144,7 +224,8 @@ For each command, the browser opens Google sign-in. Sign in as the requested
 account and grant access. The CLI receives the callback on a temporary port
 bound only to `127.0.0.1`, checks that the signed-in account matches `--account`,
 and saves `tokens/<gmail>.token.json` with mode 0600. If the browser does not open, open the printed
-URL manually **on the same computer**. `--no-browser` disables automatic browser
+URL manually **on the same computer**. The flow uses PKCE and validates callback
+state. `--no-browser` disables automatic browser
 launch; `auth --help` lists the options. Authorization times out after five
 minutes and can be cancelled with Ctrl+C.
 
@@ -183,7 +264,8 @@ volumes:
 
 Mount the same OAuth client JSON read-only under `/config`. The service uses it
 to refresh tokens, so the token mount must be **writable**. Add each Gmail address
-to `accounts` in your YAML with `method: api`, then start or redeploy the container.
+under `accounts.targets` with `method: api` and link its sources under `routes`,
+then start or redeploy the container.
 Keep tokens in their files rather than pasting them into the YAML.
 
 To re-authorize later, repeat the CLI flow, replace that account's token file
@@ -194,14 +276,12 @@ while the service is stopped, and restart it.
 Use the same binary to check real servers before starting the service:
 
 ```sh
-gmail-poppers test --mode source --config ./config.yaml telekom
-gmail-poppers test --mode source --config ./config.yaml mymail@gmail.com/gmx
+gmail-poppers test --mode source --config ./config.yaml me@example.com
 gmail-poppers test --mode target --config ./config.yaml \
   --client-secret ./client_secret.json --token-dir ./tokens mymail@gmail.com
 ```
 
-For sources, use the source name from your YAML. If that name occurs under
-multiple Gmail accounts, qualify it as `<gmail-address>/<source-name>`.
+For sources, use the email key under `accounts.sources`, even before linking it.
 For targets, use the Gmail address; the configured `method` selects API or IMAP.
 The full YAML is validated, including its environment-variable references.
 
@@ -239,7 +319,47 @@ With `method: imap`, gmail-poppers logs in to `imap.gmail.com` with an
 
 ## Configuration reference
 
-See [config.example.yaml](config.example.yaml) for a complete example.
+Targets and sources are separate maps keyed by email address; routes map each
+source email to one target. At least one route is required to run the service.
+For manual setup, use this schema:
+
+```yaml
+defaults:
+  interval: 5m
+  timeout: 10m
+  initial_sync: new_only
+accounts:
+  targets:
+    mymail@gmail.com:
+      method: api
+    second@gmail.com:
+      method: imap
+      app_password: ${GMAIL_APP_PASSWORD}
+  sources:
+    me@example.com:
+      type: pop3
+      server: pop.example.com
+      user: me@example.com
+      password: ${MY_PASS}
+    other@example.net:
+      type: imap
+      server: imap.example.net
+      user: other@example.net
+      password: ${OTHER_PASS}
+      folders: [INBOX, Newsletter]
+routes:
+  me@example.com:
+    target: mymail@gmail.com
+  other@example.net:
+    target: second@gmail.com
+    label: Imported/Other
+    initial_sync: all
+    delete_after_import: false
+```
+
+The checked-in [config.example.yaml](config.example.yaml) uses the older nested
+layout; use the schema above instead. For an existing installation, read the
+[transition warning](#changing-an-existing-installation) before replacing it.
 
 ### `defaults`
 
@@ -249,15 +369,14 @@ See [config.example.yaml](config.example.yaml) for a complete example.
 | `timeout` | `10m` | Maximum duration of one run |
 | `initial_sync` | `new_only` | `new_only` or `all`, see [State and first run](#state-and-first-run) |
 
-### `accounts.<gmail address>`
+### `accounts.targets.<gmail address>`
 
 | Field | Default | Description |
 |---|---|---|
 | `method` | `api` | `api` or `imap` |
 | `app_password` | | Required for `method: imap` |
-| `sources` | | Map of sources, keyed by a short name |
 
-### `accounts.<gmail address>.sources.<name>`
+### `accounts.sources.<external email>`
 
 | Field | Default | Description |
 |---|---|---|
@@ -265,26 +384,37 @@ See [config.example.yaml](config.example.yaml) for a complete example.
 | `server` | *required* | Hostname of the mail server |
 | `port` | depends on `tls` | POP3: 995 / 110, IMAP: 993 / 143 |
 | `tls` | `auto` | `auto`, `implicit`, `starttls` or `none` |
-| `user` | *required* | Login name |
+| `user` | *required in YAML* | Login name; `add source` defaults to the source email |
 | `password` | *required* | Password, ideally `${ENV_VAR}` |
 | `folders` | `[INBOX]` | IMAP only: folders to fetch |
-| `delete_after_import` | `false` | Delete messages on the server after a successful import |
-| `label` | source name | Gmail label to add; `""` adds no label |
 | `interval` | `defaults.interval` | Polling interval for this source |
 | `timeout` | `defaults.timeout` | Run timeout for this source |
-| `initial_sync` | `defaults.initial_sync` | `new_only` or `all` |
 
-Unknown fields are reported as errors, so typos don't go unnoticed.
+### `routes.<source email>`
+
+| Field | Default | Description |
+|---|---|---|
+| `target` | *required* | Existing key under `accounts.targets` |
+| `label` | source email | Gmail label to add; `""` adds no extra label |
+| `initial_sync` | `defaults.initial_sync` | `new_only` or `all` |
+| `delete_after_import` | `false` | Delete source messages only after successful import |
+
+Unknown fields are errors. `${NAME}` expands scalar values from the environment;
+use `$$` for a literal dollar sign in manually written YAML.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `CONFIG_PATH` | `/config/config.yaml` | Path to the configuration file |
+| `ENV_FILE` | unset | Explicit service dotenv path; no automatic dotenv loading |
 | `DATA_DIR` | `/data` | State and OAuth tokens. Mount a volume here. |
 | `TOKEN_DIR` | `${DATA_DIR}/tokens` | Override service token storage. CLI default: `./tokens`. |
 | `HTTP_ADDR` | `:8080` | Listen address for read-only status and health endpoints |
 | `DRY_RUN` | `false` | `true`: read only, see [Dry run](#dry-run) |
+| `TARGET_CONCURRENCY` | `1` | Positive maximum concurrent source runs per Gmail target |
+| `GMAIL_USER_QUOTA_UNITS` | `1500` | Positive Gmail API quota-unit budget per target per minute |
+| `GMAIL_PROJECT_QUOTA_UNITS` | `30000` | Positive shared Gmail API quota-unit budget per minute within this instance |
 | `GATUS_MODE` | `pull` | `pull`, `push` or `both` |
 | `GATUS_URL` | | Base URL of Gatus, required for `push`/`both` |
 | `GATUS_TOKEN` | | Bearer token of the Gatus external endpoints |
@@ -294,10 +424,27 @@ Unknown fields are reported as errors, so typos don't go unnoticed.
 
 Any other variable can be referenced from the config as `${NAME}`.
 
+### Scheduling and Gmail API quotas
+
+Sources sharing a target queue for `TARGET_CONCURRENCY` slots; different targets
+can run independently. The source timeout starts after admission, excluding
+queue time. Gmail API calls share an in-process project budget across all
+targets using the same OAuth project, plus a per-target user budget. These are
+local limits, not quota reservations from Google or coordination with other
+instances or apps using that project.
+
+Each attempt costs 25 units for import, 5 for label creation or 1 for label
+listing. Both budget limiters allow a burst of 25 units. Only HTTP 429 or
+HTTP 403 with `rateLimitExceeded`, `userRateLimitExceeded` or `quotaExceeded`
+receives automatic quota retries, with backoff and `Retry-After`, up to four
+attempts total. Ambiguous network errors and HTTP 5xx do not trigger automatic
+import retries within that call. A later polling run may retry unrecorded mail;
+delivery is not guaranteed exactly once.
+
 ## Gatus integration
 
 Every source becomes its own Gatus endpoint. The Gmail address is the
-**group** and the source name is the **name**. In push mode, startup logs
+**group** and the source email is the **name**. In push mode, startup logs
 include ready-to-paste external endpoint configuration for your setup.
 
 ### Push (`GATUS_MODE=push`)
@@ -309,7 +456,7 @@ source as failing if gmail-poppers stops reporting altogether.
 
 ```yaml
 external-endpoints:
-  - name: "telekom"
+  - name: "me@example.com"
     group: "mymail@gmail.com"
     token: "${GMAIL_POPPERS_GATUS_TOKEN}"
     heartbeat:
@@ -326,11 +473,15 @@ gmail-poppers serves `GET /status` (all sources) and
 healthy and 503 otherwise. A source also counts as unhealthy if its last run
 is older than 3 × interval + timeout.
 
+JSON includes `phase` (`queued`, `running` or `idle`) and `queue_duration`
+(the completed run's wait for a target slot). Queued work remains healthy unless
+an earlier error is outstanding; a running job is healthy within its timeout.
+
 ```yaml
 endpoints:
-  - name: "telekom"
+  - name: "me@example.com"
     group: "mymail@gmail.com"
-    url: "http://gmail-poppers:8080/status/mymail@gmail.com/telekom"
+    url: "http://gmail-poppers:8080/status/mymail@gmail.com/me@example.com"
     interval: 5m0s
     conditions:
       - "[STATUS] == 200"
@@ -371,7 +522,10 @@ Status and Gatus reporting remain active so you can verify the setup.
 
 gmail-poppers stores the progress of every source as JSON in `/data/state`.
 Keep `/data` on a persistent volume, or it will treat mail as new again after
-a container is recreated.
+a container is recreated. State filenames hash the source email, and the state
+is bound to its Gmail target: reusing it after changing the target is rejected.
+IMAP progress also tracks UIDVALIDITY, so a folder identity reset causes a fresh
+baseline under `new_only`.
 
 - `initial_sync: new_only` (default): on the very first run, all messages
   already on the server are only **marked as seen**. Use this if Gmail
@@ -384,6 +538,28 @@ a container is recreated.
   ones marked as seen on the first run.
 - If Gmail rejects a single message 3 times (e.g. too large), it is skipped
   and the run is reported as failed with the reason.
+
+Gmail import and local state saving are not one transaction. An import can
+succeed before a crash or ambiguous response leaves its progress unrecorded,
+so UID/UIDL and Message-ID deduplication cannot guarantee exactly-once delivery.
+
+### Changing an existing installation
+
+**Stop the service, back up config, tokens and state, and evaluate pending mail
+before transitioning.** Convert the old nested configuration manually to
+targets, sources and routes; the parser does not migrate it. Old state files
+remain untouched, but the new source-email identity selects a different hashed
+state file. With `new_only`, the fresh baseline skips **all existing messages,
+including a pending import backlog**, not just previously imported mail. Decide
+how to preserve or import that backlog before restarting; `all` can reimport
+mail already delivered to Gmail.
+
+To deliver one source to multiple targets, run separate instances with
+independent state and token directories. Disable source deletion in every
+instance so one cannot remove mail before another imports it. Their API budgets
+are independent even when the OAuth project is shared, so allow for combined
+quota use. Use separate state storage for an intentional target change rather
+than bypassing the target binding.
 
 ## TLS auto-detection
 
