@@ -6,7 +6,79 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
+
+func TestDocumentSavesBlockYAML(t *testing.T) {
+	for name, original := range map[string]string{
+		"new document":           "",
+		"existing flow document": "# preserved header\n{accounts: {sources: {old@example.com: {type: pop3, server: localhost, user: u, password: '${PRETTY_PASSWORD}'}}}}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("PRETTY_PASSWORD", "synthetic")
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if original != "" {
+				if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			doc, err := OpenDocument(path, "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.AddAccount("targets", "me@gmail.com", map[string]any{"method": "api"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.AddAccount("sources", "new@example.com", map[string]any{
+				"type": "imap", "server": "localhost", "user": "u", "password": "${PRETTY_PASSWORD}", "folders": []string{"INBOX", "Archive"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.Link("new@example.com", &Route{Target: "me@gmail.com"}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := doc.Config()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.Save(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "accounts:\n  targets:\n") && !strings.Contains(string(data), "accounts:\n  sources:\n") {
+				t.Fatalf("expected two-space block indentation:\n%s", data)
+			}
+			if !strings.Contains(string(data), "${PRETTY_PASSWORD}") || original != "" && !strings.Contains(string(data), "# preserved header") {
+				t.Fatal("formatting lost a reference or comment")
+			}
+			var root yaml.Node
+			if err := yaml.Unmarshal(data, &root); err != nil {
+				t.Fatal(err)
+			}
+			var checkStyle func(*yaml.Node)
+			checkStyle = func(node *yaml.Node) {
+				if (node.Kind == yaml.MappingNode || node.Kind == yaml.SequenceNode) && node.Style&yaml.FlowStyle != 0 {
+					t.Error("flow-style container retained")
+				}
+				for _, child := range node.Content {
+					checkStyle(child)
+				}
+			}
+			checkStyle(&root)
+			after, err := Parse(data, os.LookupEnv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(before.Accounts.Sources) != len(after.Accounts.Sources) || after.Accounts.Sources["new@example.com"].Password != "synthetic" || len(after.Accounts.Sources["new@example.com"].Folders) != 2 {
+				t.Fatal("formatting changed configuration values")
+			}
+		})
+	}
+}
 
 func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("SETUP_LOAD_SECRET", "existing")

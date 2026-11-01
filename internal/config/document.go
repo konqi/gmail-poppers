@@ -157,10 +157,17 @@ func (d *Document) Save() error {
 	if _, err := d.Config(); err != nil {
 		return err
 	}
-	data, err := yaml.Marshal(&d.root)
-	if err != nil {
+	blockStyle(&d.root)
+	var buffer bytes.Buffer
+	encoder := yaml.NewEncoder(&buffer)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&d.root); err != nil {
 		return err
 	}
+	if err := encoder.Close(); err != nil {
+		return err
+	}
+	data := buffer.Bytes()
 	if err := os.MkdirAll(filepath.Dir(d.path), 0o700); err != nil {
 		return err
 	}
@@ -186,6 +193,15 @@ func (d *Document) Save() error {
 		}
 	}
 	return WritePrivate(d.path, data)
+}
+
+func blockStyle(node *yaml.Node) {
+	if node.Kind == yaml.MappingNode || node.Kind == yaml.SequenceNode {
+		node.Style &^= yaml.FlowStyle
+	}
+	for _, child := range node.Content {
+		blockStyle(child)
+	}
 }
 
 func WritePrivate(path string, data []byte) error {
