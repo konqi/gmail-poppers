@@ -105,6 +105,10 @@ positional arguments. The dotenv default is `.env` beside the config;
 an explicit `--env-file` path must already exist. Process environment values
 override dotenv values.
 
+The option is named `--client-secret`, while the default input file is
+`client_secret.json` (with an underscore). This file is only read; account
+tokens are saved separately in the token directory.
+
 Without `--non-interactive`, `add` prompts for missing information. An API
 target uses `--mode api` (default); interactive setup authorizes it if needed,
 stages the token, checks access, then saves locally. Non-interactive API setup

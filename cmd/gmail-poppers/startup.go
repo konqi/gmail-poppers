@@ -119,6 +119,7 @@ func setupInstructions(cfg *config.Config, options *localOptions, reason string)
 	lines = append(lines, "", "Replace example addresses with your own.")
 	if len(cfg.Accounts.Targets) == 0 || cfg.Accounts.Targets[target].Method == config.MethodAPI {
 		lines = append(lines, "For an API target, download a Google Desktop app OAuth client to "+options.clientFile+".",
+			"The option is --client-secret; the default input filename is client_secret.json (with an underscore).",
 			"If the target already exists but still needs OAuth, use:", authInstruction(target, options))
 	}
 	lines = append(lines, "", "Setup changes only local files; connection checks do not modify mailboxes.",
