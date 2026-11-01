@@ -3,6 +3,7 @@ package gmailapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -28,6 +29,7 @@ type fakeGmail struct {
 	importIDs [][]string
 	query     string
 	writes    int
+	reads     int
 	rejectAll bool
 }
 
@@ -40,6 +42,7 @@ func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/gmail/v1/users/me/labels":
+		f.reads++
 		json.NewEncoder(w).Encode(map[string]any{"labels": f.labels})
 	case r.Method == "POST" && r.URL.Path == "/gmail/v1/users/me/labels":
 		f.writes++
@@ -83,6 +86,60 @@ func newTestSink(t *testing.T, f *fakeGmail) *Sink {
 	s := New("me@gmail.com", cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	s.baseURL = srv.URL
 	return s
+}
+
+func TestCheck(t *testing.T) {
+	server := &fakeGmail{}
+	client := newTestSink(t, server)
+	before, err := os.ReadFile(client.store.path(client.email))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(client.store.path(client.email))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.reads != 1 || server.writes != 0 || string(before) != string(after) {
+		t.Fatal("check must list labels without writing to Gmail or tokens")
+	}
+	client.email = "missing@gmail.com"
+	if err := client.Check(context.Background()); err == nil {
+		t.Fatal("missing token must fail")
+	}
+}
+
+func TestCheckRefreshDoesNotSaveToken(t *testing.T) {
+	server := &fakeGmail{}
+	client := newTestSink(t, server)
+	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.FormValue("grant_type") != "refresh_token" || request.FormValue("refresh_token") != "r" {
+			t.Error("unexpected refresh request")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"access","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer tokenEndpoint.Close()
+	client.cfg.Endpoint.TokenURL = tokenEndpoint.URL
+	if err := client.store.Save(client.email, &oauth2.Token{AccessToken: "expired", RefreshToken: "r", Expiry: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(client.store.path(client.email))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(client.store.path(client.email))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) || server.reads != 1 || server.writes != 0 {
+		t.Fatal("refresh during a check must not save tokens or write to Gmail")
+	}
 }
 
 func TestImportCreatesLabelAndUploads(t *testing.T) {

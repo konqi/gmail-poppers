@@ -33,6 +33,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "test" {
+		if err := runTest(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "auth" {
 		if err := runAuth(os.Args[2:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)

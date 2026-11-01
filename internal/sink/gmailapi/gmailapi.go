@@ -40,6 +40,23 @@ func New(email string, cfg *oauth2.Config, store *TokenStore, log *slog.Logger) 
 	return &Sink{email: email, cfg: cfg, store: store, log: log, baseURL: defaultBaseURL}
 }
 
+func (s *Sink) Check(ctx context.Context) error {
+	token, err := s.store.Load(s.email)
+	if err != nil {
+		return describe(err)
+	}
+	client := oauth2.NewClient(ctx, s.cfg.TokenSource(ctx, token))
+	defer client.CloseIdleConnections()
+	check := session{s: s, client: client, dryRun: true}
+	var result struct {
+		Labels []gmailLabel `json:"labels"`
+	}
+	if err := check.do(ctx, http.MethodGet, "/gmail/v1/users/me/labels", "", nil, &result); err != nil {
+		return describe(fmt.Errorf("list labels: %w", err))
+	}
+	return nil
+}
+
 // Reset drops the cached client so a freshly stored token is used.
 func (s *Sink) Reset() {
 	s.mu.Lock()

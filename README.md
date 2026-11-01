@@ -189,6 +189,43 @@ Keep tokens in their files rather than pasting them into the YAML.
 To re-authorize later, repeat the CLI flow, replace that account's token file
 while the service is stopped, and restart it.
 
+## Connection checks
+
+Use the same binary to check real servers before starting the service:
+
+```sh
+gmail-poppers test --mode source --config ./config.yaml telekom
+gmail-poppers test --mode source --config ./config.yaml mymail@gmail.com/gmx
+gmail-poppers test --mode target --config ./config.yaml \
+  --client-secret ./client_secret.json --token-dir ./tokens mymail@gmail.com
+```
+
+For sources, use the source name from your YAML. If that name occurs under
+multiple Gmail accounts, qualify it as `<gmail-address>/<source-name>`.
+For targets, use the Gmail address; the configured `method` selects API or IMAP.
+The full YAML is validated, including its environment-variable references.
+
+Each check authenticates and performs a read-only operation:
+
+| Connection | Operation |
+|---|---|
+| POP3 source | `UIDL`: list message identifiers without fetching or deleting mail |
+| IMAP source | `EXAMINE` each configured folder and `UID SEARCH ALL` |
+| Gmail API target | List labels using the existing OAuth token |
+| Gmail IMAP target | `EXAMINE INBOX` and `LIST` |
+
+No message bodies are downloaded, imported, flagged or deleted. Checks do not
+start polling, report to Gatus, or create/update state and token files. Gmail
+API may refresh an expired access token through Google's OAuth endpoint, but
+the refreshed token is used only in memory. Authorize the account with `auth`
+first if no token is available.
+
+`--timeout` defaults to `30s`; `test --help` lists all options. Configuration
+and OAuth client/token paths can also come from the service environment variables.
+The command prints `OK` on success and exits with code 0, or reports the failure
+and exits with code 1. A successful check verifies connectivity, authentication
+and read access, not permission to import/delete messages or deliverability.
+
 ## Alternative: method `imap`
 
 With `method: imap`, gmail-poppers logs in to `imap.gmail.com` with an

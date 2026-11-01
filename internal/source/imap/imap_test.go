@@ -118,6 +118,41 @@ func msg(id string) string {
 	return "Message-ID: <" + id + "@x>\r\nSubject: " + id + "\r\n\r\nbody\r\n"
 }
 
+func TestCheck(t *testing.T) {
+	server := startServer(t)
+	server.add(t, "INBOX", msg("existing"))
+	cfg := &config.Source{Server: "127.0.0.1", Port: server.port, TLS: config.TLSNone,
+		User: "me", Password: "secret", Folders: []string{"INBOX", "Archive"}, DeleteAfterImport: true}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := New(cfg, log).Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if server.count(t, "INBOX") != 1 {
+		t.Fatal("check deleted a message")
+	}
+	connection := server.client(t)
+	defer connection.Close()
+	connection.Select("INBOX", nil).Wait()
+	messages, err := connection.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{Flags: true}).Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range messages[0].Flags {
+		if flag == imap.FlagSeen || flag == imap.FlagDeleted {
+			t.Fatalf("check modified message flags: %v", messages[0].Flags)
+		}
+	}
+	cfg.Password = "wrong"
+	if err := New(cfg, log).Check(context.Background()); err == nil || !strings.Contains(err.Error(), "imap login:") {
+		t.Fatalf("unexpected login error: %v", err)
+	}
+	cfg.Password = "secret"
+	cfg.Folders = []string{"missing"}
+	if err := New(cfg, log).Check(context.Background()); err == nil || !strings.Contains(err.Error(), "select:") {
+		t.Fatalf("unexpected folder error: %v", err)
+	}
+}
+
 func TestFetchNewOnlyThenNewMessages(t *testing.T) {
 	srv := startServer(t)
 	srv.add(t, "INBOX", msg("old"))

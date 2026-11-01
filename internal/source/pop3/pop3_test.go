@@ -23,6 +23,8 @@ type fakeServer struct {
 	order     []string
 	deleted   []string
 	retrCount int
+	commands  []string
+	uidlError bool
 	ln        net.Listener
 }
 
@@ -72,6 +74,9 @@ func (s *fakeServer) serve(conn net.Conn) {
 		if len(f) == 0 {
 			continue
 		}
+		s.mu.Lock()
+		s.commands = append(s.commands, f[0])
+		s.mu.Unlock()
 		switch f[0] {
 		case "USER":
 			w("+OK")
@@ -82,6 +87,10 @@ func (s *fakeServer) serve(conn net.Conn) {
 			}
 			w("+OK")
 		case "UIDL":
+			if s.uidlError {
+				w("-ERR UIDL unavailable")
+				continue
+			}
 			w("+OK")
 			for i, uid := range snapshot {
 				w(strconv.Itoa(i+1) + " " + uid)
@@ -150,6 +159,42 @@ func run(t *testing.T, cfg *config.Source, st *state.Store) (*recSession, *sourc
 
 func msg(id, body string) string {
 	return "Message-ID: <" + id + "@x>\r\nSubject: t\r\n\r\n" + body + "\r\n"
+}
+
+func TestCheck(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		password  string
+		uidlError bool
+		wantError string
+	}{
+		{"success", "secret", false, ""},
+		{"invalid password", "wrong", false, "pop3 login:"},
+		{"listing failed", "secret", true, "pop3 uidl:"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := startServer(t)
+			server.uidlError = test.uidlError
+			server.add("u1", msg("1", "body"))
+			cfg := &config.Source{Server: "127.0.0.1", Port: server.port(), TLS: config.TLSNone,
+				User: "me", Password: test.password, DeleteAfterImport: true, InitialSync: config.InitialSyncAll}
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			err := New(cfg, log).Check(context.Background())
+			if test.wantError == "" && err != nil || test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			for _, command := range server.commands {
+				if command != "USER" && command != "PASS" && command != "UIDL" && command != "QUIT" {
+					t.Errorf("unexpected check command: %s", command)
+				}
+			}
+			if test.wantError == "" && strings.Join(server.commands, ",") != "USER,PASS,UIDL,QUIT" {
+				t.Errorf("unexpected sequence: %v", server.commands)
+			}
+		})
+	}
 }
 
 func TestFetchNewOnlyThenImport(t *testing.T) {

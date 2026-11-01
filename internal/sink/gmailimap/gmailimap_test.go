@@ -107,6 +107,19 @@ func TestImportUnreadWithLabel(t *testing.T) {
 	}
 }
 
+func TestCheck(t *testing.T) {
+	addr := start(t)
+	if err := testSink(addr, "app-pw").Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(flagsIn(t, addr, "INBOX")) != 0 {
+		t.Fatal("check appended a message")
+	}
+	if err := testSink(addr, "wrong").Check(context.Background()); err == nil || !strings.Contains(err.Error(), "gmail imap login") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoginErrorMentionsAppPassword(t *testing.T) {
 	addr := start(t)
 	_, err := testSink(addr, "wrong").Open(context.Background(), false)

@@ -18,6 +18,26 @@ type Source struct {
 
 func New(cfg *config.Source, log *slog.Logger) *Source { return &Source{cfg: cfg, log: log} }
 
+func (s *Source) Check(ctx context.Context) error {
+	candidates := mailconn.Candidates(mailconn.POP3, s.cfg.Server, s.cfg.Port, s.cfg.TLS)
+	connection, _, err := mailconn.Connect(ctx, candidates, func(endpoint mailconn.Endpoint) (*client, error) {
+		return s.dial(ctx, endpoint)
+	})
+	if err != nil {
+		return fmt.Errorf("pop3 connect: %w", err)
+	}
+	stop := closeOnCancel(ctx, connection.conn)
+	defer stop()
+	defer connection.conn.Close()
+	if err := connection.login(s.cfg.User, s.cfg.Password); err != nil {
+		return fmt.Errorf("pop3 login: %w", err)
+	}
+	if _, err := connection.uidl(); err != nil {
+		return fmt.Errorf("pop3 uidl: %w", err)
+	}
+	return quit(connection)
+}
+
 func (s *Source) Fetch(ctx context.Context, p *source.Processor) error {
 	cands := mailconn.Candidates(mailconn.POP3, s.cfg.Server, s.cfg.Port, s.cfg.TLS)
 	c, ep, err := mailconn.Connect(ctx, cands, func(e mailconn.Endpoint) (*client, error) {
@@ -106,6 +126,9 @@ func (s *Source) dial(ctx context.Context, e mailconn.Endpoint) (*client, error)
 	if err != nil {
 		return nil, err
 	}
+	stop := closeOnCancel(ctx, conn)
+	defer stop()
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	c, err := newClient(conn)
 	if err != nil {
 		conn.Close()

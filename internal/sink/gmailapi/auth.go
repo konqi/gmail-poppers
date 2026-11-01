@@ -82,6 +82,17 @@ func NewTokenStore(dir string) (*TokenStore, error) {
 	return &TokenStore{dir: dir}, nil
 }
 
+func OpenTokenStore(dir string) (*TokenStore, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("token store: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, errors.New("token store: path must be a directory")
+	}
+	return &TokenStore{dir: dir}, nil
+}
+
 func (s *TokenStore) path(email string) string {
 	return filepath.Join(s.dir, strings.ToLower(filepath.Base(email))+".token.json")
 }

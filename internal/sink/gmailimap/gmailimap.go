@@ -35,10 +35,16 @@ func New(email, appPassword string, log *slog.Logger) *Sink {
 }
 
 func (s *Sink) Open(ctx context.Context, dryRun bool) (sink.Session, error) {
+	return s.open(ctx, dryRun)
+}
+
+func (s *Sink) open(ctx context.Context, dryRun bool) (*session, error) {
 	c, err := imapsrc.Dial(ctx, s.endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("gmail imap connect: %w", err)
 	}
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
 	if err := c.Login(s.email, s.appPassword).Wait(); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("gmail imap login (check the app password): %w", err)
@@ -48,6 +54,23 @@ func (s *Sink) Open(ctx context.Context, dryRun bool) (sink.Session, error) {
 		return nil, fmt.Errorf("gmail imap select INBOX: %w", err)
 	}
 	return &session{c: c, log: s.log, dryRun: dryRun}, nil
+}
+
+func (s *Sink) Check(ctx context.Context) error {
+	connection, err := s.open(ctx, true)
+	if err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() { connection.c.Close() })
+	defer stop()
+	defer connection.c.Close()
+	if _, err := connection.c.List("", "*", nil).Collect(); err != nil {
+		return fmt.Errorf("gmail imap list: %w", err)
+	}
+	if err := connection.c.Logout().Wait(); err != nil {
+		return fmt.Errorf("gmail imap logout: %w", err)
+	}
+	return nil
 }
 
 type session struct {

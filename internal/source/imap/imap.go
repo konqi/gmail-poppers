@@ -30,6 +30,8 @@ func Dial(ctx context.Context, e mailconn.Endpoint) (*imapclient.Client, error) 
 	if err != nil {
 		return nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	if e.Security == mailconn.StartTLS {
 		return imapclient.NewStartTLS(conn, &imapclient.Options{TLSConfig: mailconn.TLSConfig(e.Host)})
 	}
@@ -39,6 +41,31 @@ func Dial(ctx context.Context, e mailconn.Endpoint) (*imapclient.Client, error) 
 		return nil, fmt.Errorf("greeting: %w", err)
 	}
 	return c, nil
+}
+
+func (s *Source) Check(ctx context.Context) error {
+	candidates := mailconn.Candidates(mailconn.IMAP, s.cfg.Server, s.cfg.Port, s.cfg.TLS)
+	connection, _, err := mailconn.Connect(ctx, candidates, func(endpoint mailconn.Endpoint) (*imapclient.Client, error) {
+		return Dial(ctx, endpoint)
+	})
+	if err != nil {
+		return fmt.Errorf("imap connect: %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() { connection.Close() })
+	defer stop()
+	defer connection.Close()
+	if err := connection.Login(s.cfg.User, s.cfg.Password).Wait(); err != nil {
+		return fmt.Errorf("imap login: %w", err)
+	}
+	for _, folder := range s.cfg.Folders {
+		if _, err := connection.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+			return fmt.Errorf("imap folder %q: select: %w", folder, err)
+		}
+		if _, err := connection.UIDSearch(&imap.SearchCriteria{}, nil).Wait(); err != nil {
+			return fmt.Errorf("imap folder %q: search: %w", folder, err)
+		}
+	}
+	return connection.Logout().Wait()
 }
 
 func (s *Source) Fetch(ctx context.Context, p *source.Processor) error {
