@@ -11,6 +11,9 @@ import (
 )
 
 type Entry struct {
+	Phase         string
+	StartedAt     time.Time
+	QueueDuration time.Duration
 	Account       string
 	Source        string
 	Interval      time.Duration
@@ -28,10 +31,12 @@ type Entry struct {
 // Health evaluates the entry; message is "ok" when healthy.
 func (e Entry) Health(now time.Time) (bool, string) {
 	switch {
-	case e.LastRun.IsZero():
-		return false, "no run yet"
 	case e.Error != "":
 		return false, e.Error
+	case e.Phase == "queued" || e.Phase == "running" && now.Sub(e.StartedAt) <= e.Timeout:
+		return true, "ok"
+	case e.LastRun.IsZero():
+		return false, "no run yet"
 	case now.Sub(e.LastRun) > 3*e.Interval+e.Timeout:
 		return false, fmt.Sprintf("stale: last run at %s", e.LastRun.Format(time.RFC3339))
 	default:

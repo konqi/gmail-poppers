@@ -27,11 +27,11 @@ func TestPush(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := &Pusher{BaseURL: srv.URL + "/", Token: "tok", Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	err := p.push(context.Background(), status.Entry{Account: "me@gmail.com", Source: "telekom", Error: "pop3 login: bad", Duration: 1500 * time.Millisecond})
+	err := p.push(context.Background(), status.Entry{Account: "me@gmail.com", Source: "user@telekom.de", Error: "pop3 login: bad", Duration: 1500 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != "/api/v1/endpoints/me@gmail-com_telekom/external" {
+	if gotPath != "/api/v1/endpoints/me@gmail-com_user@telekom-de/external" {
 		t.Errorf("path = %q", gotPath)
 	}
 	for _, want := range []string{"success=false", "error=pop3+login%3A+bad", "duration=1.5s"} {
@@ -57,22 +57,31 @@ func TestPushHTTPError(t *testing.T) {
 
 func TestRender(t *testing.T) {
 	cfg, err := config.Parse([]byte(`
-accounts:
-  me@gmail.com:
-    sources:
-      telekom: {type: pop3, server: s, user: u, password: p, interval: 5m}
+accounts: {
+targets: {me@gmail.com: {}, unused@gmail.com: {}},
+sources: {
+user@telekom.de: {type: pop3, server: s, user: u, password: p, interval: 5m},
+unused@example.com: {type: imap, server: s, user: u, password: p}
+}
+}
+routes: {user@telekom.de: {target: me@gmail.com}}
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	push := RenderExternalEndpoints(cfg)
-	for _, want := range []string{`name: "telekom"`, `group: "me@gmail.com"`, "interval: 25m0s", "${GMAIL_POPPERS_GATUS_TOKEN}"} {
+	for _, want := range []string{`name: "user@telekom.de"`, `group: "me@gmail.com"`, "interval: 25m0s", "${GMAIL_POPPERS_GATUS_TOKEN}"} {
 		if !strings.Contains(push, want) {
 			t.Errorf("push snippet missing %q:\n%s", want, push)
 		}
 	}
 	pull := RenderPullEndpoints(cfg, "http://poppers:8080/")
-	if !strings.Contains(pull, `url: "http://poppers:8080/status/me@gmail.com/telekom"`) {
+	if !strings.Contains(pull, `url: "http://poppers:8080/status/me@gmail.com/user@telekom.de"`) || !strings.Contains(pull, "interval: 5m0s") {
 		t.Errorf("pull snippet:\n%s", pull)
+	}
+	for _, snippet := range []string{push, pull} {
+		if strings.Contains(snippet, "unused@") || strings.Count(snippet, "  - name:") != 1 {
+			t.Errorf("only routed sources should have endpoints:\n%s", snippet)
+		}
 	}
 }

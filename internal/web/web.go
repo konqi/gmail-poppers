@@ -30,6 +30,8 @@ func (s *Server) Handler() http.Handler {
 }
 
 type statusJSON struct {
+	Phase         string    `json:"phase,omitempty"`
+	QueueDuration string    `json:"queue_duration"`
 	Account       string    `json:"account"`
 	Source        string    `json:"source"`
 	Healthy       bool      `json:"healthy"`
@@ -47,6 +49,7 @@ type statusJSON struct {
 func (s *Server) toJSON(entry status.Entry) statusJSON {
 	ok, message := entry.Health(time.Now())
 	return statusJSON{
+		Phase: entry.Phase, QueueDuration: entry.QueueDuration.Round(time.Millisecond).String(),
 		Account: entry.Account, Source: entry.Source, Healthy: ok, Message: message, Summary: entry.Summary, DryRun: s.DryRun,
 		LastRun: entry.LastRun, LastSuccess: entry.LastSuccess, Duration: entry.Duration.Round(time.Millisecond).String(),
 		LastImported: entry.LastImported, TotalImported: entry.TotalImported, TotalSkipped: entry.TotalSkipped,

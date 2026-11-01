@@ -33,6 +33,19 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "add" || os.Args[1] == "link") {
+		var err error
+		if os.Args[1] == "add" {
+			err = runAdd(os.Args[2:], os.Stdout)
+		} else {
+			err = runLink(os.Args[2:], os.Stdout)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "test" {
 		if err := runTest(os.Args[2:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -58,11 +71,19 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
+	if path := os.Getenv("ENV_FILE"); path != "" {
+		if err := config.LoadEnvironment(path); err != nil {
+			return fmt.Errorf("ENV_FILE: %w", err)
+		}
+	}
 	cfg, err := config.Load(env("CONFIG_PATH", "/config/config.yaml"))
 	if err != nil {
 		return err
 	}
 	dataDir := env("DATA_DIR", "/data")
+	if err := cfg.ValidateService(); err != nil {
+		return err
+	}
 	dryRun, err := strconv.ParseBool(env("DRY_RUN", "false"))
 	if err != nil {
 		return fmt.Errorf("DRY_RUN: %w", err)
@@ -85,6 +106,31 @@ func run(log *slog.Logger) error {
 	sinks := buildSinks(cfg, tokens, log)
 
 	reg := status.NewRegistry()
+	concurrency, err := strconv.Atoi(env("TARGET_CONCURRENCY", "1"))
+	if err != nil || concurrency < 1 {
+		return errors.New("TARGET_CONCURRENCY must be a positive integer")
+	}
+	admissions := map[string]*runner.Admission{}
+	for email := range cfg.Accounts.Targets {
+		admissions[email] = runner.NewAdmission(concurrency)
+	}
+	userUnits, err := strconv.Atoi(env("GMAIL_USER_QUOTA_UNITS", "1500"))
+	if err != nil {
+		return errors.New("GMAIL_USER_QUOTA_UNITS must be an integer")
+	}
+	projectUnits, err := strconv.Atoi(env("GMAIL_PROJECT_QUOTA_UNITS", "30000"))
+	if err != nil {
+		return errors.New("GMAIL_PROJECT_QUOTA_UNITS must be an integer")
+	}
+	budget, err := gmailapi.NewBudget(userUnits, projectUnits)
+	if err != nil {
+		return err
+	}
+	for _, target := range sinks {
+		if api, ok := target.(*gmailapi.Sink); ok {
+			api.Budget = budget
+		}
+	}
 	var reporters []runner.Reporter
 	if gatus.PushEnabled(mode) {
 		reporters = append(reporters, &gatus.Pusher{
@@ -99,8 +145,11 @@ func run(log *slog.Logger) error {
 	var jobs []*runner.Job
 	for _, s := range cfg.Sources() {
 		slg := log.With("account", s.Account, "source", s.Name)
-		st, err := state.Open(filepath.Join(dataDir, "state"), s.ID())
+		st, err := state.Open(filepath.Join(dataDir, "state"), s.Name)
 		if err != nil {
+			return err
+		}
+		if err := st.BindTarget(s.Account); err != nil {
 			return err
 		}
 		var src source.Source
@@ -112,7 +161,8 @@ func run(log *slog.Logger) error {
 		}
 		reg.Register(s)
 		jobs = append(jobs, &runner.Job{
-			Cfg: s, Source: src, Sink: sinks[s.Account], State: st, DryRun: dryRun,
+			Admission: admissions[s.Account],
+			Cfg:       s, Source: src, Sink: sinks[s.Account], State: st, DryRun: dryRun,
 			Log: slg, Status: reg, Reporters: reporters,
 		})
 	}
@@ -165,7 +215,7 @@ func buildSinks(cfg *config.Config, tokens *gmailapi.TokenStore, log *slog.Logge
 
 	var oauthCfg *oauth2.Config
 	needsOAuth := false
-	for _, a := range cfg.Accounts {
+	for _, a := range cfg.Accounts.Targets {
 		needsOAuth = needsOAuth || a.Method == config.MethodAPI
 	}
 	if needsOAuth {
@@ -177,7 +227,7 @@ func buildSinks(cfg *config.Config, tokens *gmailapi.TokenStore, log *slog.Logge
 		}
 	}
 
-	for _, a := range cfg.Accounts {
+	for _, a := range cfg.Accounts.Targets {
 		alog := log.With("account", a.Email)
 		switch {
 		case a.Method == config.MethodIMAP:

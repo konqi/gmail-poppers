@@ -30,8 +30,21 @@ const (
 )
 
 type Config struct {
-	Defaults Defaults            `yaml:"defaults"`
-	Accounts map[string]*Account `yaml:"accounts"`
+	Defaults Defaults          `yaml:"defaults,omitempty"`
+	Accounts Accounts          `yaml:"accounts"`
+	Routes   map[string]*Route `yaml:"routes,omitempty"`
+}
+
+type Accounts struct {
+	Targets map[string]*Account `yaml:"targets"`
+	Sources map[string]*Source  `yaml:"sources"`
+}
+
+type Route struct {
+	Target            string  `yaml:"target"`
+	Label             *string `yaml:"label,omitempty"`
+	InitialSync       string  `yaml:"initial_sync,omitempty"`
+	DeleteAfterImport bool    `yaml:"delete_after_import,omitempty"`
 }
 
 type Defaults struct {
@@ -41,10 +54,9 @@ type Defaults struct {
 }
 
 type Account struct {
-	Email       string             `yaml:"-"`
-	Method      string             `yaml:"method"`
-	AppPassword string             `yaml:"app_password"`
-	Sources     map[string]*Source `yaml:"sources"`
+	Email       string `yaml:"-"`
+	Method      string `yaml:"method"`
+	AppPassword string `yaml:"app_password"`
 }
 
 type Source struct {
@@ -57,11 +69,11 @@ type Source struct {
 	User              string        `yaml:"user"`
 	Password          string        `yaml:"password"`
 	Folders           []string      `yaml:"folders"`
-	DeleteAfterImport bool          `yaml:"delete_after_import"`
-	Label             *string       `yaml:"label"`
+	DeleteAfterImport bool          `yaml:"-"`
+	Label             *string       `yaml:"-"`
 	Interval          time.Duration `yaml:"interval"`
 	Timeout           time.Duration `yaml:"timeout"`
-	InitialSync       string        `yaml:"initial_sync"`
+	InitialSync       string        `yaml:"-"`
 }
 
 // ID uniquely identifies a source across all accounts.
@@ -159,18 +171,18 @@ func (c *Config) normalize() error {
 	if !oneOf(c.Defaults.InitialSync, InitialSyncNewOnly, InitialSyncAll) {
 		errs = append(errs, fmt.Errorf("defaults.initial_sync: invalid value %q (want new_only|all)", c.Defaults.InitialSync))
 	}
-	if len(c.Accounts) == 0 {
-		errs = append(errs, errors.New("accounts: at least one Gmail account is required"))
+	if c.Defaults.Timeout <= 0 {
+		errs = append(errs, errors.New("defaults.timeout must be positive"))
 	}
 
-	for email, acc := range c.Accounts {
-		p := "accounts." + email
+	for email, acc := range c.Accounts.Targets {
+		p := "accounts.targets." + email
 		if acc == nil {
 			errs = append(errs, fmt.Errorf("%s: empty account", p))
 			continue
 		}
 		acc.Email = email
-		if !strings.Contains(email, "@") {
+		if !ValidEmail(email) {
 			errs = append(errs, fmt.Errorf("%s: key must be a Gmail address", p))
 		}
 		if acc.Method == "" {
@@ -185,21 +197,46 @@ func (c *Config) normalize() error {
 		default:
 			errs = append(errs, fmt.Errorf("%s.method: invalid value %q (want api|imap)", p, acc.Method))
 		}
-		if len(acc.Sources) == 0 {
-			errs = append(errs, fmt.Errorf("%s.sources: at least one source is required", p))
+	}
+	for name, src := range c.Accounts.Sources {
+		sp := "accounts.sources." + name
+		if src == nil {
+			errs = append(errs, fmt.Errorf("%s: empty source", sp))
+			continue
 		}
-		for name, src := range acc.Sources {
-			sp := p + ".sources." + name
-			if src == nil {
-				errs = append(errs, fmt.Errorf("%s: empty source", sp))
-				continue
-			}
-			src.Name = name
-			src.Account = email
-			errs = append(errs, c.normalizeSource(sp, src)...)
+		if !ValidEmail(name) {
+			errs = append(errs, fmt.Errorf("%s: key must be an email address", sp))
+		}
+		src.Name = name
+		errs = append(errs, c.normalizeSource(sp, src)...)
+	}
+	for name, route := range c.Routes {
+		if route == nil {
+			errs = append(errs, fmt.Errorf("routes.%s: empty route", name))
+			continue
+		}
+		if c.Accounts.Sources[name] == nil || c.Accounts.Targets[route.Target] == nil {
+			errs = append(errs, fmt.Errorf("routes.%s: source and target must reference existing accounts", name))
+		}
+		if route.InitialSync == "" {
+			route.InitialSync = c.Defaults.InitialSync
+		}
+		if !oneOf(route.InitialSync, InitialSyncNewOnly, InitialSyncAll) {
+			errs = append(errs, fmt.Errorf("routes.%s.initial_sync: invalid value", name))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func ValidEmail(email string) bool {
+	return strings.Contains(email, "@") && !strings.ContainsAny(email, "/\\\r\n\x00 ")
+}
+
+func (c *Config) ValidateService() error {
+	if len(c.Routes) == 0 {
+		return errors.New("config: at least one route is required to run the service")
+	}
+	return nil
 }
 
 func (c *Config) normalizeSource(p string, s *Source) []error {
@@ -248,11 +285,8 @@ func (c *Config) normalizeSource(p string, s *Source) []error {
 	if s.Timeout == 0 {
 		s.Timeout = c.Defaults.Timeout
 	}
-	if s.InitialSync == "" {
-		s.InitialSync = c.Defaults.InitialSync
-	}
-	if !oneOf(s.InitialSync, InitialSyncNewOnly, InitialSyncAll) {
-		errs = append(errs, fmt.Errorf("%s.initial_sync: invalid value %q (want new_only|all)", p, s.InitialSync))
+	if s.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("%s.timeout: must be positive", p))
 	}
 	return errs
 }
@@ -260,10 +294,13 @@ func (c *Config) normalizeSource(p string, s *Source) []error {
 // Sources returns all sources sorted by account and name.
 func (c *Config) Sources() []*Source {
 	var out []*Source
-	for _, acc := range c.Accounts {
-		for _, s := range acc.Sources {
-			out = append(out, s)
-		}
+	for name, route := range c.Routes {
+		src := *c.Accounts.Sources[name]
+		src.Account = route.Target
+		src.Label = route.Label
+		src.InitialSync = route.InitialSync
+		src.DeleteAfterImport = route.DeleteAfterImport
+		out = append(out, &src)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID() < out[j].ID() })
 	return out
@@ -271,8 +308,8 @@ func (c *Config) Sources() []*Source {
 
 // AccountList returns all accounts sorted by email.
 func (c *Config) AccountList() []*Account {
-	out := make([]*Account, 0, len(c.Accounts))
-	for _, a := range c.Accounts {
+	out := make([]*Account, 0, len(c.Accounts.Targets))
+	for _, a := range c.Accounts.Targets {
 		out = append(out, a)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Email < out[j].Email })

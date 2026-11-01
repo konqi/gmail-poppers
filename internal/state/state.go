@@ -2,12 +2,12 @@
 package state
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -25,6 +25,7 @@ const (
 )
 
 type data struct {
+	Target      string            `json:"target,omitempty"`
 	Initialized map[string]bool   `json:"initialized"`
 	Messages    map[string]string `json:"messages"`
 	Failures    map[string]int    `json:"failures,omitempty"`
@@ -37,13 +38,11 @@ type Store struct {
 	d    data
 }
 
-var unsafeChars = regexp.MustCompile(`[^A-Za-z0-9@._-]+`)
-
 func Open(dir, id string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("state: %w", err)
 	}
-	name := unsafeChars.ReplaceAllString(strings.ReplaceAll(id, "/", "__"), "_") + ".json"
+	name := fmt.Sprintf("%x.json", sha256.Sum256([]byte(id)))
 	s := &Store{path: filepath.Join(dir, name)}
 	b, err := os.ReadFile(s.path)
 	switch {
@@ -68,6 +67,14 @@ func Open(dir, id string) (*Store, error) {
 		s.d.MessageIDs = map[string]int64{}
 	}
 	return s, nil
+}
+
+func (s *Store) BindTarget(target string) error {
+	if s.d.Target != "" && s.d.Target != target {
+		return errors.New("state: source is bound to another target; use separate state storage for a new target")
+	}
+	s.d.Target = target
+	return nil
 }
 
 // Save writes the state atomically.

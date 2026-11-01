@@ -21,6 +21,27 @@ func TestHealth(t *testing.T) {
 		{"ok", func(e *Entry) { e.LastRun = now }, true, "ok"},
 		{"error", func(e *Entry) { e.LastRun = now; e.Error = "pop3 login: nope" }, false, "pop3 login: nope"},
 		{"stale", func(e *Entry) { e.LastRun = now.Add(-5 * time.Minute) }, false, "stale"},
+		{"queued before first run", func(e *Entry) { e.Phase = "queued" }, true, "ok"},
+		{"queued after success", func(e *Entry) { e.Phase = "queued"; e.LastRun = now.Add(-time.Hour); e.LastSuccess = e.LastRun }, true, "ok"},
+		{"running after success", func(e *Entry) {
+			e.Phase = "running"
+			e.StartedAt = now
+			e.LastRun = now.Add(-time.Hour)
+			e.LastSuccess = e.LastRun
+		}, true, "ok"},
+		{"running at timeout", func(e *Entry) {
+			e.Phase = "running"
+			e.StartedAt = now.Add(-e.Timeout)
+			e.LastRun = now.Add(-time.Hour)
+		}, true, "ok"},
+		{"running past timeout", func(e *Entry) {
+			e.Phase = "running"
+			e.StartedAt = now.Add(-e.Timeout - time.Nanosecond)
+			e.LastRun = now.Add(-time.Hour)
+		}, false, "stale"},
+		{"queued with error", func(e *Entry) { e.Phase = "queued"; e.Error = "gmail api: quota exhausted" }, false, "gmail api: quota exhausted"},
+		{"running with error", func(e *Entry) { e.Phase = "running"; e.StartedAt = now; e.Error = "pop3 login: nope" }, false, "pop3 login: nope"},
+		{"idle after stale success", func(e *Entry) { e.Phase = "idle"; e.LastRun = now.Add(-time.Hour); e.LastSuccess = e.LastRun }, false, "stale"},
 	}
 	for _, tc := range cases {
 		e := base

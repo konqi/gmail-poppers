@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +32,7 @@ type Sink struct {
 	store   *TokenStore
 	log     *slog.Logger
 	baseURL string
+	Budget  *Budget
 
 	mu     sync.Mutex
 	client *http.Client
@@ -187,23 +191,68 @@ func (ss session) do(ctx context.Context, method, path, contentType string, body
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	resp, err := ss.client.Do(req)
-	if err != nil {
-		return err
+	units := 1
+	if strings.Contains(path, "/messages/import") {
+		units = 25
+	} else if method == http.MethodPost {
+		units = 5
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return parseError(resp)
+	for attempt := 0; ; attempt++ {
+		if ss.s.Budget != nil {
+			if err := ss.s.Budget.Wait(ctx, ss.s.email, units); err != nil {
+				return err
+			}
+		}
+		current := req.Clone(ctx)
+		if req.GetBody != nil {
+			current.Body, err = req.GetBody()
+			if err != nil {
+				return err
+			}
+		}
+		resp, err := ss.client.Do(current)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode/100 == 2 {
+			defer resp.Body.Close()
+			if out == nil {
+				return nil
+			}
+			return json.NewDecoder(resp.Body).Decode(out)
+		}
+		err = parseError(resp)
+		resp.Body.Close()
+		var failure *apiError
+		if attempt >= 3 || !errors.As(err, &failure) || !failure.quotaError() {
+			return err
+		}
+		delay := time.Second*time.Duration(1<<attempt) + time.Duration(rand.Int64N(int64(time.Second)))
+		if seconds, parseErr := strconv.Atoi(failure.RetryAfter); parseErr == nil && seconds > 0 {
+			delay = max(delay, time.Duration(seconds)*time.Second)
+		} else if until, parseErr := http.ParseTime(failure.RetryAfter); parseErr == nil {
+			delay = max(delay, time.Until(until))
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 type apiError struct {
-	Code    int
-	Message string
+	Code       int
+	Message    string
+	Reason     string
+	RetryAfter string
+}
+
+func (e *apiError) quotaError() bool {
+	return e.Code == http.StatusTooManyRequests || e.Code == http.StatusForbidden &&
+		(e.Reason == "rateLimitExceeded" || e.Reason == "userRateLimitExceeded" || e.Reason == "quotaExceeded")
 }
 
 func (e *apiError) Error() string {
@@ -215,13 +264,20 @@ func parseError(resp *http.Response) error {
 	var g struct {
 		Error struct {
 			Message string `json:"message"`
+			Errors  []struct {
+				Reason string `json:"reason"`
+			} `json:"errors"`
 		} `json:"error"`
 	}
 	msg := string(b)
 	if json.Unmarshal(b, &g) == nil && g.Error.Message != "" {
 		msg = g.Error.Message
 	}
-	return &apiError{Code: resp.StatusCode, Message: msg}
+	reason := ""
+	if len(g.Error.Errors) > 0 {
+		reason = g.Error.Errors[0].Reason
+	}
+	return &apiError{Code: resp.StatusCode, Message: msg, Reason: reason, RetryAfter: resp.Header.Get("Retry-After")}
 }
 
 // describe adds the "gmail api" prefix and turns OAuth failures into actionable messages.

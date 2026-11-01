@@ -29,7 +29,12 @@ type Job struct {
 	Log       *slog.Logger
 	Status    *status.Registry
 	Reporters []Reporter
+	Admission *Admission
 }
+
+type Admission struct{ slots chan struct{} }
+
+func NewAdmission(limit int) *Admission { return &Admission{slots: make(chan struct{}, limit)} }
 
 // Run blocks until ctx is cancelled.
 func (j *Job) Run(ctx context.Context) {
@@ -46,7 +51,30 @@ func (j *Job) Run(ctx context.Context) {
 }
 
 func (j *Job) RunOnce(ctx context.Context) status.Entry {
+	defer j.Status.Update(j.Cfg.ID(), func(entry *status.Entry) { entry.Phase = "idle" })
+	queued := time.Now()
+	if j.Admission != nil {
+		j.Status.Update(j.Cfg.ID(), func(entry *status.Entry) { entry.Phase = "queued" })
+		ticker := time.NewTicker(j.Cfg.Interval)
+		defer ticker.Stop()
+	wait:
+		for {
+			select {
+			case <-ctx.Done():
+				return status.Entry{}
+			case j.Admission.slots <- struct{}{}:
+				defer func() { <-j.Admission.slots }()
+				break wait
+			case <-ticker.C:
+				entry, _ := j.Status.Get(j.Cfg.Account, j.Cfg.Name)
+				for _, reporter := range j.Reporters {
+					reporter.Report(ctx, entry)
+				}
+			}
+		}
+	}
 	start := time.Now()
+	j.Status.Update(j.Cfg.ID(), func(entry *status.Entry) { entry.Phase = "running"; entry.StartedAt = start })
 	res, err := j.fetch(ctx)
 	if ctx.Err() != nil {
 		return status.Entry{}
@@ -55,6 +83,8 @@ func (j *Job) RunOnce(ctx context.Context) status.Entry {
 
 	e := j.Status.Update(j.Cfg.ID(), func(e *status.Entry) {
 		e.LastRun = start
+		e.Phase = "idle"
+		e.QueueDuration = start.Sub(queued)
 		e.Duration = d
 		e.LastImported = res.Imported
 		e.TotalImported += res.Imported

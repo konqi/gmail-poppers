@@ -13,9 +13,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
-	"strings"
 	"time"
 
+	"gmail-poppers/internal/config"
 	"gmail-poppers/internal/sink/gmailapi"
 
 	"golang.org/x/oauth2"
@@ -25,23 +25,29 @@ func runAuth(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("auth", flag.ContinueOnError)
 	flags.SetOutput(output)
 	account := flags.String("account", "", "Gmail address to authorize (required)")
-	clientFile := flags.String("client-secret", os.Getenv("GOOGLE_CLIENT_SECRET_FILE"), "Google Desktop app client JSON file")
-	tokenDir := flags.String("token-dir", env("TOKEN_DIR", "./tokens"), "Directory for per-account token files")
+	options := localFlags(flags)
 	noBrowser := flags.Bool("no-browser", false, "Print the URL without opening a browser")
-	if err := flags.Parse(args); err != nil {
+	if err := parseLocal(flags, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 || !strings.Contains(*account, "@") || strings.ContainsAny(*account, "/\\\r\n") {
+	if flags.NArg() != 0 || !config.ValidEmail(*account) {
 		return errors.New("auth: provide --account with a Gmail address and no positional arguments")
 	}
-	cfg, err := gmailapi.LoadOAuthConfig(*clientFile, os.Getenv("GOOGLE_CLIENT_ID"), os.Getenv("GOOGLE_CLIENT_SECRET"))
+	if err := setupWritable(); err != nil {
+		return err
+	}
+	doc, err := options.document()
 	if err != nil {
 		return err
 	}
-	store, err := gmailapi.NewTokenStore(*tokenDir)
+	cfg, err := options.oauth(doc)
+	if err != nil {
+		return err
+	}
+	store, err := gmailapi.NewTokenStore(options.tokenDir)
 	if err != nil {
 		return err
 	}
@@ -60,7 +66,7 @@ func runAuth(args []string, output io.Writer) error {
 	if err := authorizeLocal(ctx, cfg, store, *account, launch); err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "Authorized %s. Token saved in %s. Keep token files private.\n", *account, *tokenDir)
+	fmt.Fprintf(output, "Authorized %s. Token saved in %s. Keep token files private.\n", *account, options.tokenDir)
 	return nil
 }
 

@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"gmail-poppers/internal/config"
@@ -24,11 +22,9 @@ func runTest(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("test", flag.ContinueOnError)
 	flags.SetOutput(output)
 	mode := flags.String("mode", "", "source or target (required)")
-	configPath := flags.String("config", env("CONFIG_PATH", "/config/config.yaml"), "Service YAML configuration")
-	tokenDir := flags.String("token-dir", env("TOKEN_DIR", filepath.Join(env("DATA_DIR", "/data"), "tokens")), "Existing OAuth token directory")
-	clientFile := flags.String("client-secret", os.Getenv("GOOGLE_CLIENT_SECRET_FILE"), "Google Desktop app client JSON file")
+	options := localFlags(flags)
 	timeout := flags.Duration("timeout", 30*time.Second, "Connection check timeout")
-	if err := flags.Parse(args); err != nil {
+	if err := parseLocal(flags, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
@@ -37,7 +33,11 @@ func runTest(args []string, output io.Writer) error {
 	if (*mode != "source" && *mode != "target") || flags.NArg() != 1 || *timeout <= 0 {
 		return errors.New("test: use --mode source|target [options] <account-name> with a positive timeout")
 	}
-	cfg, err := config.Load(*configPath)
+	doc, err := options.document()
+	if err != nil {
+		return err
+	}
+	cfg, err := doc.Config()
 	if err != nil {
 		return err
 	}
@@ -49,25 +49,25 @@ func runTest(args []string, output io.Writer) error {
 		if err != nil {
 			return err
 		}
-		name = selected.ID()
+		name = selected.Name
 		if selected.Type == config.TypePOP3 {
 			check = pop3.New(selected, log).Check
 		} else {
 			check = imapsrc.New(selected, log).Check
 		}
 	} else {
-		account, ok := cfg.Accounts[name]
+		account, ok := cfg.Accounts.Targets[name]
 		if !ok {
 			return fmt.Errorf("test: unknown target account %q (use its Gmail address)", name)
 		}
 		if account.Method == config.MethodIMAP {
 			check = gmailimap.New(account.Email, account.AppPassword, log).Check
 		} else {
-			oauthCfg, err := gmailapi.LoadOAuthConfig(*clientFile, os.Getenv("GOOGLE_CLIENT_ID"), os.Getenv("GOOGLE_CLIENT_SECRET"))
+			oauthCfg, err := options.oauth(doc)
 			if err != nil {
 				return err
 			}
-			store, err := gmailapi.OpenTokenStore(*tokenDir)
+			store, err := gmailapi.OpenTokenStore(options.tokenDir)
 			if err != nil {
 				return err
 			}
@@ -89,25 +89,7 @@ func runTest(args []string, output io.Writer) error {
 }
 
 func selectSource(cfg *config.Config, name string) (*config.Source, error) {
-	account, sourceName, qualified := strings.Cut(name, "/")
-	if qualified {
-		if target := cfg.Accounts[account]; target != nil {
-			if selected := target.Sources[sourceName]; selected != nil {
-				return selected, nil
-			}
-		}
-		return nil, fmt.Errorf("test: unknown source %q", name)
-	}
-	var selected *config.Source
-	for _, source := range cfg.Sources() {
-		if source.Name != name {
-			continue
-		}
-		if selected != nil {
-			return nil, fmt.Errorf("test: source name %q is ambiguous; use <gmail-address>/<source-name>", name)
-		}
-		selected = source
-	}
+	selected := cfg.Accounts.Sources[name]
 	if selected == nil {
 		return nil, fmt.Errorf("test: unknown source %q", name)
 	}
